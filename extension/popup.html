@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Bookmark Advisor</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 16px;
+        width: 420px;
+        color: #17202a;
+        background: linear-gradient(180deg, #f7fafc 0%, #eef4f7 100%);
+      }
+
+      h1 {
+        font-size: 18px;
+        margin: 0 0 8px;
+      }
+
+      code {
+        font-size: 12px;
+      }
+
+      p {
+        margin: 0 0 12px;
+        line-height: 1.4;
+      }
+
+      .panel {
+        background: #ffffff;
+        border: 1px solid #d7e1e8;
+        border-radius: 12px;
+        padding: 12px;
+        margin-bottom: 12px;
+        box-shadow: 0 6px 18px rgba(18, 34, 49, 0.06);
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .stat {
+        background: #f4f8fb;
+        border-radius: 10px;
+        padding: 10px;
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 18px;
+      }
+
+      button {
+        width: 100%;
+        padding: 10px 12px;
+        border: 0;
+        border-radius: 10px;
+        background: #115e59;
+        color: white;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .tabs {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        margin: 12px 0;
+      }
+
+      .tab-button {
+        background: #d9e8ea;
+        color: #17333a;
+      }
+
+      .tab-button.active {
+        background: #115e59;
+        color: #ffffff;
+      }
+
+      .tab-panel[hidden] {
+        display: none;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 700;
+        margin: 10px 0 4px;
+      }
+
+      input[type="password"],
+      input[type="text"],
+      input[type="number"],
+      select {
+        box-sizing: border-box;
+        width: 100%;
+        border: 1px solid #cbd8df;
+        border-radius: 10px;
+        color: #17202a;
+        font-size: 13px;
+        padding: 9px 10px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 96px;
+        gap: 8px;
+      }
+
+      .wide-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .button-row {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .button-row button {
+        font-size: 12px;
+        padding: 8px;
+      }
+
+      button.secondary {
+        background: #2f4f5f;
+      }
+
+      button.danger {
+        background: #7f1d1d;
+      }
+
+      button[disabled] {
+        background: #9fb6b8;
+        cursor: not-allowed;
+      }
+
+      ul {
+        padding-left: 18px;
+        margin: 8px 0 0;
+        max-height: 180px;
+        overflow: auto;
+      }
+
+      li {
+        margin-bottom: 6px;
+        line-height: 1.35;
+      }
+
+      .error {
+        color: #9f1239;
+      }
+
+      .ok {
+        color: #166534;
+      }
+
+      .warning {
+        color: #92400e;
+      }
+
+      .hint {
+        color: #52616d;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Bookmark Advisor</h1>
+    <p>Generate or import a <code>reviewed-plan.json</code>, review the preflight summary, and execute it inside Edge.</p>
+
+    <div class="tabs" role="tablist" aria-label="Bookmark Advisor sections">
+      <button id="plan-tab-btn" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="plan-tab">Plan</button>
+      <button id="settings-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="settings-tab">LLM Settings</button>
+    </div>
+
+    <section id="plan-tab" class="tab-panel" role="tabpanel" aria-labelledby="plan-tab-btn">
+      <div class="panel">
+        <strong>AI planning via HTTPS</strong>
+        <div class="row">
+          <div>
+            <label for="focus-path">Focus folder</label>
+            <input id="focus-path" type="text" value="/收藏夹栏/奇妙小工具">
+          </div>
+          <div>
+            <label for="max-actions">Max actions</label>
+            <input id="max-actions" type="number" min="1" max="80" value="40">
+          </div>
+        </div>
+        <p class="hint">Uses the saved LLM endpoint, model, and encrypted API key from Settings. Fast mode sends bookmark titles, URLs, domains, and folder paths as evidence.</p>
+        <button id="generate-ai-btn" type="button">Generate AI Plan</button>
+      </div>
+
+      <div class="panel">
+        <input id="plan-file" type="file" accept=".json,application/json">
+        <p class="hint">JSON syntax and plan structure are linted before execution. Only approved or edited actions run.</p>
+      </div>
+
+      <div class="panel">
+        <div id="status">No plan loaded yet.</div>
+        <div class="stats" id="stats" hidden>
+          <div class="stat"><strong id="total-count">0</strong><span>Total</span></div>
+          <div class="stat"><strong id="executable-count">0</strong><span>Executable</span></div>
+          <div class="stat"><strong id="review-count">0</strong><span>Review</span></div>
+          <div class="stat"><strong id="error-count">0</strong><span>Errors</span></div>
+          <div class="stat"><strong id="warning-count">0</strong><span>Warnings</span></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <strong>Action preview</strong>
+        <ul id="preview-list"></ul>
+      </div>
+
+      <div class="panel">
+        <button id="export-snapshot-btn" type="button">Export Current Snapshot</button>
+      </div>
+
+      <button id="execute-btn" disabled>Execute Reviewed Plan</button>
+      <div style="height: 8px;"></div>
+      <button id="download-report-btn" disabled>Download Execution Report</button>
+    </section>
+
+    <section id="settings-tab" class="tab-panel" role="tabpanel" aria-labelledby="settings-tab-btn" hidden>
+      <div class="panel">
+        <strong>OpenAI-compatible LLM</strong>
+        <label for="api-base-url">API base URL</label>
+        <input id="api-base-url" type="text" value="https://api.openai.com/v1" spellcheck="false">
+        <p class="hint" id="endpoint-preview">Requests will use the configured provider base URL.</p>
+
+        <div class="wide-row">
+          <div>
+            <label for="api-style">Endpoint mode</label>
+            <select id="api-style">
+              <option value="auto">Auto fallback</option>
+              <option value="responses">Responses API</option>
+              <option value="chat_completions">Chat Completions</option>
+            </select>
+          </div>
+          <div>
+            <label for="model">Model</label>
+            <input id="model" type="text" value="gpt-4o-mini" spellcheck="false">
+          </div>
+        </div>
+
+        <label for="api-key">API key</label>
+        <input id="api-key" type="password" autocomplete="off" placeholder="sk-..., sk-or-..., provider key">
+
+        <div class="button-row">
+          <button id="save-credentials-btn" class="secondary" type="button">Save Credentials</button>
+          <button id="forget-key-btn" class="danger" type="button">Forget Key</button>
+        </div>
+        <p class="hint" id="key-storage-status">No saved key checked yet.</p>
+        <p class="hint">Inputs auto-save as popup drafts when this window closes. API key drafts and saved keys are stored with AES-GCM encryption. The AES key is derived automatically with SHA-256 from this extension install, so there is no unlock password to remember.</p>
+      </div>
+    </section>
+
+    <script src="plan_lint.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
