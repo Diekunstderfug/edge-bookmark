@@ -1,0 +1,58 @@
+# Local bookmark exports, backups, plans, reports, and job artifacts.
+data/
+
+# Personal exports, backups, browser dumps, and local datasets.
+*.bak
+*.backup
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.numbers
+*.bib
+*.ris
+*.enw
+*.nbib
+*.har
+*.mhtml
+*bookmarks*.html
+*Bookmarks*.html
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.log
+
+# Archives often contain private exports or snapshots.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# Local secrets and credentials.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.mobileprovision
+
+# Python runtime artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local virtual environments.
+.venv/
+venv/
+env/
+
+# OS/editor noise.
+.DS_Store
+*.swp
