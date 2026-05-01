@@ -6,6 +6,8 @@ const ENCRYPTED_KEY_STORAGE_NAME = "bookmarkAdvisorOpenAIKey";
 const ENCRYPTED_KEY_DRAFT_STORAGE_NAME = "bookmarkAdvisorOpenAIKeyDraft";
 const LLM_SETTINGS_STORAGE_NAME = "bookmarkAdvisorLlmSettings";
 const UI_DRAFT_STORAGE_NAME = "bookmarkAdvisorPopupDraft";
+const LAST_PLAN_STORAGE_NAME = "bookmarkAdvisorLastPlan";
+const LAST_REPORT_STORAGE_NAME = "bookmarkAdvisorLastReport";
 const DEFAULT_LLM_SETTINGS = {
   apiBaseUrl: "https://api.openai.com/v1",
   apiStyle: "auto",
@@ -26,6 +28,7 @@ const keyStorageStatusEl = document.getElementById("key-storage-status");
 const modelInput = document.getElementById("model");
 const maxActionsInput = document.getElementById("max-actions");
 const focusPathInput = document.getElementById("focus-path");
+const userInstructionInput = document.getElementById("user-instruction");
 const statusEl = document.getElementById("status");
 const statsEl = document.getElementById("stats");
 const totalCountEl = document.getElementById("total-count");
@@ -40,6 +43,7 @@ const generateAiButton = document.getElementById("generate-ai-btn");
 const saveCredentialsButton = document.getElementById("save-credentials-btn");
 const forgetKeyButton = document.getElementById("forget-key-btn");
 const downloadReportButton = document.getElementById("download-report-btn");
+const spinnerEl = document.getElementById("spinner");
 const planTabButton = document.getElementById("plan-tab-btn");
 const settingsTabButton = document.getElementById("settings-tab-btn");
 const planTab = document.getElementById("plan-tab");
@@ -47,6 +51,24 @@ const settingsTab = document.getElementById("settings-tab");
 let restoringInputs = false;
 let cacheWriteInFlight = false;
 let cacheWriteQueued = false;
+
+function showSpinner() { spinnerEl.hidden = false; }
+function hideSpinner() { spinnerEl.hidden = true; }
+function updateStatus(message, className) {
+  statusEl.textContent = message;
+  statusEl.className = className || "";
+}
+
+async function saveLastPlan(plan) {
+  await chromeStorageSet(LAST_PLAN_STORAGE_NAME, {
+    plan,
+    saved_at: new Date().toISOString(),
+  });
+}
+
+async function saveLastReport(report) {
+  await chromeStorageSet(LAST_REPORT_STORAGE_NAME, report);
+}
 
 initializeTabs();
 initializeSavedSettings();
@@ -68,6 +90,7 @@ fileInput.addEventListener("change", async (event) => {
     downloadReportButton.disabled = true;
     renderError(error instanceof Error ? error.message : String(error));
     executeButton.disabled = true;
+    chromeStorageRemove(LAST_PLAN_STORAGE_NAME);
   }
 });
 
@@ -175,8 +198,17 @@ generateAiButton.addEventListener("click", async () => {
 
   generateAiButton.disabled = true;
   executeButton.disabled = true;
-  statusEl.textContent = "Exporting current bookmarks and asking the configured LLM for a reviewed plan...";
-  statusEl.className = "";
+  updateStatus("Exporting current bookmarks...", "");
+  showSpinner();
+
+  function onStorageChange(changes, areaName) {
+    if (areaName !== "local") return;
+    const progress = changes.bookmarkAdvisorProgress;
+    if (progress && progress.newValue) {
+      updateStatus(progress.newValue.message || "Working...", "");
+    }
+  }
+  chrome.storage.onChanged.addListener(onStorageChange);
 
   try {
     const hostGranted = await ensureHostPermission(settings.apiBaseUrl);
@@ -203,13 +235,15 @@ generateAiButton.addEventListener("click", async () => {
     }
     loadPlan(response.reviewed_plan);
     if (loadedSummary && loadedSummary.ok) {
-      statusEl.textContent = `AI plan generated with ${loadedSummary.executableActions.length} executable action(s). Review before executing.`;
-      statusEl.className = loadedSummary.warnings.length > 0 ? "warning" : "ok";
+      updateStatus(`AI plan generated with ${loadedSummary.executableActions.length} executable action(s). Review before executing.`, loadedSummary.warnings.length > 0 ? "warning" : "ok");
     }
   } catch (error) {
+    hideSpinner();
     renderError(error instanceof Error ? error.message : String(error));
   } finally {
+    chrome.storage.onChanged.removeListener(onStorageChange);
     generateAiButton.disabled = false;
+    hideSpinner();
   }
 });
 
@@ -218,8 +252,18 @@ executeButton.addEventListener("click", async () => {
     return;
   }
   executeButton.disabled = true;
-  statusEl.textContent = "Executing reviewed plan inside Edge...";
-  statusEl.className = "";
+  updateStatus("Executing reviewed plan inside Edge...", "");
+  showSpinner();
+
+  function onStorageChange(changes, areaName) {
+    if (areaName !== "local") return;
+    const progress = changes.bookmarkAdvisorProgress;
+    if (progress && progress.newValue) {
+      updateStatus(progress.newValue.message || "Working...", "");
+    }
+  }
+  chrome.storage.onChanged.addListener(onStorageChange);
+
   try {
     const response = await sendRuntimeMessage({
       type: "apply-reviewed-plan",
@@ -231,25 +275,27 @@ executeButton.addEventListener("click", async () => {
   } catch (error) {
     renderError(error instanceof Error ? error.message : String(error));
   } finally {
+    chrome.storage.onChanged.removeListener(onStorageChange);
     executeButton.disabled = false;
+    hideSpinner();
   }
 });
 
 exportSnapshotButton.addEventListener("click", async () => {
   exportSnapshotButton.disabled = true;
-  statusEl.textContent = "Exporting current Edge snapshot...";
-  statusEl.className = "";
+  updateStatus("Exporting current Edge snapshot...", "");
+  showSpinner();
   try {
     const response = await sendRuntimeMessage({
       type: "export-snapshot",
     });
     downloadJson(response, buildFilename("snapshot"));
-    statusEl.textContent = "Current snapshot exported.";
-    statusEl.className = "ok";
+    updateStatus("Current snapshot exported.", "ok");
   } catch (error) {
     renderError(error instanceof Error ? error.message : String(error));
   } finally {
     exportSnapshotButton.disabled = false;
+    hideSpinner();
   }
 });
 
@@ -281,6 +327,21 @@ async function initializeSavedSettings() {
     attachInputCacheHandlers();
     requestInputCacheWrite();
   }
+
+  try {
+    const savedPlanRecord = await chromeStorageGet(LAST_PLAN_STORAGE_NAME);
+    if (savedPlanRecord && savedPlanRecord.plan) {
+      loadPlan(savedPlanRecord.plan);
+      updateStatus("Restored last plan. Review before executing.", "ok");
+    }
+    const savedReport = await chromeStorageGet(LAST_REPORT_STORAGE_NAME);
+    if (savedReport) {
+      lastExecutionReport = savedReport;
+      downloadReportButton.disabled = false;
+    }
+  } catch (_error) {
+    // plan restoration is best-effort
+  }
 }
 
 function attachInputCacheHandlers() {
@@ -291,6 +352,7 @@ function attachInputCacheHandlers() {
     apiKeyInput,
     focusPathInput,
     maxActionsInput,
+    userInstructionInput,
   ];
   for (const field of fields) {
     field.addEventListener("input", () => {
@@ -353,6 +415,7 @@ async function persistInputCache() {
     model: modelInput.value,
     focusPath: focusPathInput.value,
     maxActions: maxActionsInput.value,
+    userInstruction: userInstructionInput.value,
     updated_at: new Date().toISOString(),
   });
 
@@ -412,11 +475,15 @@ function loadPlan(plan) {
   downloadReportButton.disabled = true;
   renderSummary(summary);
   executeButton.disabled = !summary.ok || summary.executableActions.length === 0;
+  saveLastPlan(plan);
 }
 
 function renderExecutionResult(report) {
   const failures = report.failures || [];
   const succeeded = report.succeeded || [];
+  lastExecutionReport = report;
+  downloadReportButton.disabled = false;
+  saveLastReport(report);
   statusEl.className = failures.length === 0 ? "ok" : "error";
   statusEl.textContent =
     failures.length === 0
@@ -543,6 +610,7 @@ async function loadUiDraft() {
     model: typeof saved.model === "string" ? saved.model : "",
     focusPath: typeof saved.focusPath === "string" ? saved.focusPath : DEFAULT_UI_DRAFT.focusPath,
     maxActions: typeof saved.maxActions === "string" ? saved.maxActions : DEFAULT_UI_DRAFT.maxActions,
+    userInstruction: typeof saved.userInstruction === "string" ? saved.userInstruction : "",
   };
 }
 
@@ -558,6 +626,9 @@ function applyUiDraft(draft) {
   }
   focusPathInput.value = draft.focusPath || DEFAULT_UI_DRAFT.focusPath;
   maxActionsInput.value = draft.maxActions || DEFAULT_UI_DRAFT.maxActions;
+  if (draft.userInstruction) {
+    userInstructionInput.value = draft.userInstruction;
+  }
   showTab(draft.activeTab || DEFAULT_UI_DRAFT.activeTab);
 }
 

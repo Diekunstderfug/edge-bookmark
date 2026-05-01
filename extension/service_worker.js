@@ -49,7 +49,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function generateAiReviewedPlan(options) {
+  reportProgress("Exporting current bookmarks...");
   const snapshot = await exportCurrentSnapshot();
+  reportProgress("Calling LLM endpoint...");
   return BookmarkAdvisorAI.generateReviewedPlan({
     ...options,
     snapshot,
@@ -73,6 +75,11 @@ async function executeReviewedPlan(plan) {
   const succeeded = [];
   const failures = [];
   const executedAt = new Date().toISOString();
+  const totalActions = EXECUTION_ORDER.reduce(
+    (sum, actionType) => sum + grouped.get(actionType).length, 0,
+  );
+
+  reportProgress("Starting plan execution...");
 
   for (const actionType of EXECUTION_ORDER) {
     for (const action of grouped.get(actionType)) {
@@ -93,6 +100,7 @@ async function executeReviewedPlan(plan) {
           executed_at: executedAt,
         });
       }
+      reportProgress(`Executing action ${succeeded.length + failures.length}/${totalActions}...`);
     }
   }
 
@@ -470,4 +478,8 @@ function resolveActionStatus(plan, action) {
     return action.status;
   }
   return plan.plan_version === "1" ? "approved" : "proposed";
+}
+
+function reportProgress(message) {
+  chrome.storage.local.set({ bookmarkAdvisorProgress: { message, updated_at: Date.now() } });
 }
