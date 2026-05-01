@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from bookmark_advisor.models import Plan, PlanAction
+from bookmark_advisor.utils import atomic_write_json
 
 
 def apply_plan(plan: Plan, destination: Path, write_source: bool = False) -> Path:
@@ -13,8 +14,7 @@ def apply_plan(plan: Plan, destination: Path, write_source: bool = False) -> Pat
     for action in plan.actions:
         _apply_action(data, action)
     target = source_path if write_source else destination
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(target, data)
     return target
 
 
@@ -31,8 +31,7 @@ def apply_reviewed_semantic_plan(
             continue
         _apply_action(data, _plan_action_from_semantic_payload(action))
     target = source_path if write_source else destination
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(target, data)
     return target
 
 

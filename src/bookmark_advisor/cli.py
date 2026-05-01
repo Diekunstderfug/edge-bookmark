@@ -37,7 +37,7 @@ from bookmark_advisor.snapshot_io import (
     write_review_queue_document,
     write_snapshot_document,
 )
-from bookmark_advisor.utils import slugify
+from bookmark_advisor.utils import atomic_write_json, slugify
 
 
 def main() -> int:
@@ -338,11 +338,7 @@ def main() -> int:
             if args.out
             else workspace / "data" / "reports" / f"snapshot_diff_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(
-            json.dumps(diff_payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        atomic_write_json(destination, diff_payload)
         print(destination)
         return 0
 
