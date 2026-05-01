@@ -1,4 +1,5 @@
 importScripts("ai_planner.js");
+importScripts("storage_helpers.js");
 
 const EXECUTION_ORDER = [
   "rename_folder",
@@ -8,6 +9,8 @@ const EXECUTION_ORDER = [
   "remove_duplicate",
 ];
 const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
+const ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
+let runningJobId = "";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message) {
@@ -15,9 +18,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "apply-reviewed-plan") {
-    executeReviewedPlan(message.plan)
+    executeReviewedPlan(message.plan, reportProgress)
       .then((result) => sendResponse(result))
       .catch((error) => {
+        reportProgress(`Execution failed: ${error.message || String(error)}`);
         sendResponse({
           succeeded: [],
           failures: [{ actionType: "plan", error: error.message || String(error) }],
@@ -37,28 +41,194 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "generate-ai-plan") {
-    generateAiReviewedPlan(message.options || {})
+    generateAiReviewedPlan(message.options || {}, reportProgress)
       .then((result) => sendResponse(result))
       .catch((error) => {
+        reportProgress(`AI planning failed: ${error.message || String(error)}`);
         sendResponse({ error: error.message || String(error) });
       });
+    return true;
+  }
+
+  if (message.type === "revise-ai-plan") {
+    reviseAiReviewedPlan(message.plan, message.options || {}, reportProgress)
+      .then((result) => sendResponse(result))
+      .catch((error) => {
+        reportProgress(`AI plan revision failed: ${error.message || String(error)}`);
+        sendResponse({ error: error.message || String(error) });
+      });
+    return true;
+  }
+
+  if (message.type === "start-background-job") {
+    startBackgroundJob(message.job_type, message.payload || {})
+      .then((response) => sendResponse(response))
+      .catch((error) => sendResponse({ error: error.message || String(error) }));
+    return true;
+  }
+
+  if (message.type === "get-active-job") {
+    getActiveJobForPopup()
+      .then((job) => sendResponse({ job: job || null }))
+      .catch((error) => sendResponse({ error: error.message || String(error) }));
+    return true;
+  }
+
+  if (message.type === "list-folders") {
+    listFolders()
+      .then((folders) => sendResponse({ folders }))
+      .catch((error) => sendResponse({ error: error.message || String(error) }));
     return true;
   }
 
   return undefined;
 });
 
-async function generateAiReviewedPlan(options) {
-  reportProgress("Exporting current bookmarks...");
-  const snapshot = await exportCurrentSnapshot();
-  reportProgress("Calling LLM endpoint...");
-  return BookmarkAdvisorAI.generateReviewedPlan({
-    ...options,
-    snapshot,
+async function startBackgroundJob(jobType, payload) {
+  if (!["generate-ai-plan", "revise-ai-plan", "apply-reviewed-plan"].includes(jobType)) {
+    return { error: `Unsupported background job type: ${jobType}` };
+  }
+  const existingJob = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  if (isFreshRunningJob(existingJob)) {
+    return { error: `Background job already running: ${existingJob.type}` };
+  }
+  if (isStaleRunningJob(existingJob)) {
+    await failJob(existingJob, "Background job timed out before completion.");
+  }
+  const job = {
+    id: `job-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    type: jobType,
+    status: "running",
+    progress: "Starting background job...",
+    started_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  runningJobId = job.id;
+  void saveActiveJob(job).then(() => runBackgroundJob(job, payload)).catch((error) => {
+    void failJob(job, error.message || String(error));
   });
+  return { job };
 }
 
-async function executeReviewedPlan(plan) {
+async function getActiveJobForPopup() {
+  const job = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  if (isStaleRunningJob(job)) {
+    const failed = await failJob(job, "Background job timed out before completion.");
+    return failed;
+  }
+  return job || null;
+}
+
+function isFreshRunningJob(job) {
+  return !!job && job.status === "running" && !isStaleRunningJob(job);
+}
+
+function isStaleRunningJob(job) {
+  if (!job || job.status !== "running") {
+    return false;
+  }
+  const updatedAt = Date.parse(job.updated_at || job.started_at || "");
+  return !Number.isFinite(updatedAt) || Date.now() - updatedAt > ACTIVE_JOB_STALE_MS;
+}
+
+async function failJob(job, message) {
+  const failed = {
+    ...job,
+    status: "failed",
+    progress: message,
+    error: message,
+    updated_at: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+  };
+  if (runningJobId === job.id) {
+    runningJobId = "";
+  }
+  await saveActiveJob(failed);
+  return failed;
+}
+
+async function runBackgroundJob(job, payload) {
+  const onProgress = (message) => jobProgress(job, message);
+  if (job.type === "generate-ai-plan") {
+    const result = await generateAiReviewedPlan(payload.options || {}, onProgress);
+    await finishJob(job, result, "AI plan generated.");
+    return;
+  }
+  if (job.type === "revise-ai-plan") {
+    const result = await reviseAiReviewedPlan(payload.plan, payload.options || {}, onProgress);
+    await finishJob(job, result, "AI plan revision complete.");
+    return;
+  }
+  if (job.type === "apply-reviewed-plan") {
+    const result = await executeReviewedPlan(payload.plan, onProgress);
+    await finishJob(job, result, "Execution complete.");
+  }
+}
+
+async function finishJob(job, result, progress) {
+  await saveActiveJob({
+    ...job,
+    status: "succeeded",
+    progress,
+    result,
+    updated_at: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+  });
+  if (runningJobId === job.id) {
+    runningJobId = "";
+  }
+}
+
+function saveActiveJob(job) {
+  return chromeStorageSet(ACTIVE_JOB_STORAGE_NAME, job);
+}
+
+function jobProgress(job, message) {
+  const updated = {
+    ...job,
+    status: "running",
+    progress: message,
+    updated_at: new Date().toISOString(),
+  };
+  return Promise.all([
+    saveActiveJob(updated),
+    chromeStorageSet("bookmarkAdvisorProgress", { message, updated_at: Date.now() }),
+  ]);
+}
+
+async function generateAiReviewedPlan(options, onProgress = reportProgress) {
+  await onProgress("Exporting current bookmarks...");
+  const snapshot = await exportCurrentSnapshot();
+  await onProgress("Calling LLM endpoint...");
+  const result = await BookmarkAdvisorAI.generateReviewedPlan({
+    ...options,
+    onProgress,
+    snapshot,
+  });
+  await saveLastPlan(result.reviewed_plan);
+  await onProgress("AI plan generated and saved for popup restore.");
+  return result;
+}
+
+async function reviseAiReviewedPlan(plan, options, onProgress = reportProgress) {
+  if (!plan || typeof plan !== "object" || !Array.isArray(plan.actions)) {
+    throw new Error("Load a reviewed plan before asking the LLM to revise it.");
+  }
+  await onProgress("Exporting current bookmarks...");
+  const snapshot = await exportCurrentSnapshot();
+  await onProgress("Calling LLM endpoint to revise current plan...");
+  const result = await BookmarkAdvisorAI.reviseReviewedPlan({
+    ...options,
+    existingPlan: plan,
+    onProgress,
+    snapshot,
+  });
+  await saveLastPlan(result.reviewed_plan);
+  await onProgress("AI plan revision saved for popup restore.");
+  return result;
+}
+
+async function executeReviewedPlan(plan, onProgress = reportProgress) {
   validateExecutablePlan(plan);
 
   const grouped = new Map(EXECUTION_ORDER.map((actionType) => [actionType, []]));
@@ -79,7 +249,7 @@ async function executeReviewedPlan(plan) {
     (sum, actionType) => sum + grouped.get(actionType).length, 0,
   );
 
-  reportProgress("Starting plan execution...");
+  await onProgress("Starting plan execution...");
 
   for (const actionType of EXECUTION_ORDER) {
     for (const action of grouped.get(actionType)) {
@@ -100,20 +270,24 @@ async function executeReviewedPlan(plan) {
           executed_at: executedAt,
         });
       }
-      reportProgress(`Executing action ${succeeded.length + failures.length}/${totalActions}...`);
+      await onProgress(`Executing action ${succeeded.length + failures.length}/${totalActions}...`);
     }
   }
 
-  return {
+  const report = {
     plan_version: plan.plan_version || "2",
     plan_kind: plan.plan_kind || "reviewed",
     executed_at: executedAt,
     succeeded,
     failures,
   };
+  await saveLastReport(report);
+  await onProgress("Execution report saved for popup restore.");
+  return report;
 }
 
 async function exportCurrentSnapshot() {
+  assertBookmarkApiAvailable();
   const tree = await bookmarkCall("getTree");
   const folders = [];
   const bookmarks = [];
@@ -127,6 +301,13 @@ async function exportCurrentSnapshot() {
     folders,
     bookmarks,
   };
+}
+
+async function listFolders() {
+  const snapshot = await exportCurrentSnapshot();
+  return (snapshot.folders || [])
+    .slice()
+    .sort((a, b) => a.path.localeCompare(b.path, "zh-Hans-CN"));
 }
 
 function walkTree(node, parentPath, folders, bookmarks) {
@@ -145,6 +326,8 @@ function walkTree(node, parentPath, folders, bookmarks) {
       depth: parentPath ? path.split("/").filter(Boolean).length - 1 : 0,
       bookmark_count: childBookmarks,
       subfolder_count: childFolders,
+      folder_type: node.folderType || "",
+      syncing: typeof node.syncing === "boolean" ? node.syncing : null,
     });
   }
 
@@ -380,6 +563,7 @@ function resolvePathToFolderId(root, folderPath) {
 }
 
 function bookmarkCall(method, ...args) {
+  assertBookmarkApiAvailable();
   return new Promise((resolve, reject) => {
     chrome.bookmarks[method](...args, (result) => {
       if (chrome.runtime.lastError) {
@@ -389,6 +573,12 @@ function bookmarkCall(method, ...args) {
       resolve(result);
     });
   });
+}
+
+function assertBookmarkApiAvailable() {
+  if (!chrome.bookmarks || typeof chrome.bookmarks.getTree !== "function") {
+    throw new Error("Bookmark permission is unavailable. Enable the extension's Bookmarks permission, then reload the extension.");
+  }
 }
 
 function bookmarkSearch(query) {
@@ -481,5 +671,5 @@ function resolveActionStatus(plan, action) {
 }
 
 function reportProgress(message) {
-  chrome.storage.local.set({ bookmarkAdvisorProgress: { message, updated_at: Date.now() } });
+  return chromeStorageSet("bookmarkAdvisorProgress", { message, updated_at: Date.now() });
 }

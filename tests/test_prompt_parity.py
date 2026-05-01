@@ -18,7 +18,6 @@ CORE_PHRASES = [
     "Prefer moving bookmarks into semantically appropriate existing folders",
     "Only propose create_folder when a genuinely new category is justified",
     "Use keep_for_review for ambiguous, risky, or low-confidence items",
-    "Loose bookmarks directly under protected root paths must stay in place",
     "Only bookmarks with review_status=reviewed may be auto-classified",
 ]
 
@@ -27,16 +26,27 @@ _JS_PLANNER_PATH = _EXTENSION_DIR / "ai_planner.js"
 
 
 def _read_js_system_prompt_source() -> str:
-    """Extract the buildSystemPrompt function body from JS source."""
+    """Extract the buildSystemPrompt function body from JS source using brace counting."""
     js_source = _JS_PLANNER_PATH.read_text(encoding="utf-8")
-    # Match the return [...] block inside buildSystemPrompt
-    match = re.search(
-        r"function buildSystemPrompt\(maxActions\)\s*\{[^[]*(\[[\s\S]*?\])\.join",
+    header = re.search(
+        r"function buildSystemPrompt\(maxActions(?:,\s*\w+)?\)\s*\{",
         js_source,
     )
-    if not match:
-        raise AssertionError("Could not find buildSystemPrompt return array in JS source")
-    return match.group(1)
+    if not header:
+        raise AssertionError("Could not find buildSystemPrompt function signature in JS source")
+    start = header.end()
+    depth = 1
+    i = start
+    while i < len(js_source) and depth > 0:
+        ch = js_source[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        raise AssertionError("Unbalanced braces in buildSystemPrompt")
+    return js_source[start:i - 1]
 
 
 class TestPromptParity(unittest.TestCase):
@@ -63,12 +73,9 @@ class TestPromptParity(unittest.TestCase):
             )
 
     def test_js_prompt_has_all_core_phrases_in_order(self):
-        js_array_source = _read_js_system_prompt_source()
-        # Flatten array source into a single string (simulate .join(" "))
-        # Extract all string literals from the JS array
-        string_literals = re.findall(r'"([^"]*)"', js_array_source)
-        # Also handle template literals with ${maxActions}
-        template_literals = re.findall(r"`([^`]*)`", js_array_source)
+        js_body = _read_js_system_prompt_source()
+        string_literals = re.findall(r'"([^"]*)"', js_body)
+        template_literals = re.findall(r"`([^`]*)`", js_body)
         all_parts = string_literals + template_literals
         joined_prompt = " ".join(all_parts)
         positions = []
@@ -103,10 +110,10 @@ class TestPromptParity(unittest.TestCase):
         )
 
     def test_js_prompt_keeps_extension_linting_line(self):
-        js_array_source = _read_js_system_prompt_source()
+        js_body = _read_js_system_prompt_source()
         self.assertIn(
             "The browser extension will lint and post-process your output",
-            js_array_source,
+            js_body,
         )
 
     def test_max_actions_parameterized(self):
@@ -118,25 +125,22 @@ class TestPromptParity(unittest.TestCase):
         self.assertIn("${maxActions}", js_source)
 
     def test_both_prompts_have_keep_for_review(self):
-        """Cross-check: both prompts mention keep_for_review."""
         py_prompt = _system_prompt(max_actions=40)
         self.assertIn("keep_for_review", py_prompt)
-        js_array_source = _read_js_system_prompt_source()
-        self.assertIn("keep_for_review", js_array_source)
+        js_body = _read_js_system_prompt_source()
+        self.assertIn("keep_for_review", js_body)
 
     def test_both_prompts_have_protected_root(self):
-        """Cross-check: both prompts mention protected root."""
         py_prompt = _system_prompt(max_actions=40)
         self.assertIn("protected root", py_prompt)
-        js_array_source = _read_js_system_prompt_source()
-        self.assertIn("protected root", js_array_source)
+        js_body = _read_js_system_prompt_source()
+        self.assertIn("protected root", js_body)
 
     def test_both_prompts_have_review_status(self):
-        """Cross-check: both prompts mention review_status."""
         py_prompt = _system_prompt(max_actions=40)
         self.assertIn("review_status", py_prompt)
-        js_array_source = _read_js_system_prompt_source()
-        self.assertIn("review_status", js_array_source)
+        js_body = _read_js_system_prompt_source()
+        self.assertIn("review_status", js_body)
 
 
 if __name__ == "__main__":

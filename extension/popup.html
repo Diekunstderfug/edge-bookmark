@@ -68,8 +68,8 @@
 
       .tabs {
         display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 8px;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
         margin: 12px 0;
       }
 
@@ -153,7 +153,7 @@
       ul {
         padding-left: 18px;
         margin: 8px 0 0;
-        max-height: 180px;
+        max-height: 300px;
         overflow: auto;
       }
 
@@ -161,6 +161,136 @@
         margin-bottom: 6px;
         line-height: 1.35;
       }
+
+      .category-group {
+        margin-bottom: 6px;
+        border: 1px solid #d7e1e8;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .category-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background: #e8f0f2;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        color: #17333a;
+        user-select: none;
+        border: none;
+        width: auto;
+        border-radius: 0;
+      }
+
+      .category-header:hover {
+        background: #d4e6e9;
+      }
+
+      .category-header .category-name {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .category-header .category-path {
+        font-size: 11px;
+        color: #52616d;
+        font-weight: 400;
+      }
+
+      .category-header .count-badge {
+        background: #115e59;
+        color: white;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 8px;
+        min-width: 20px;
+        text-align: center;
+      }
+
+      .category-header .chevron {
+        font-size: 10px;
+        transition: transform 0.15s ease;
+        color: #52616d;
+      }
+
+      .category-header.expanded .chevron {
+        transform: rotate(90deg);
+      }
+
+      .category-details {
+        display: none;
+        padding: 6px 10px;
+        background: #f7fafc;
+      }
+
+      .category-details.open {
+        display: block;
+      }
+
+      .action-item {
+        padding: 6px 0;
+        border-bottom: 1px solid #e8f0f2;
+      }
+
+      .action-item:last-child {
+        border-bottom: none;
+      }
+
+      .action-item .action-title {
+        font-weight: 600;
+        font-size: 12px;
+        color: #17202a;
+        margin-bottom: 2px;
+        word-break: break-word;
+      }
+
+      .action-item .action-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: #52616d;
+        margin-bottom: 2px;
+        flex-wrap: wrap;
+      }
+
+      .action-item .action-type-label {
+        background: #d4e6e9;
+        color: #17333a;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 10px;
+      }
+
+      .action-item .action-type-label.review {
+        background: #fef3c7;
+        color: #92400e;
+      }
+
+      .action-item .action-reason {
+        font-size: 11px;
+        color: #52616d;
+        font-style: italic;
+        word-break: break-word;
+      }
+
+      .action-item .confidence-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        vertical-align: middle;
+      }
+
+      .action-item .confidence-dot.high { background: #166534; }
+      .action-item .confidence-dot.medium { background: #92400e; }
+      .action-item .confidence-dot.low { background: #9f1239; }
 
       .error {
         color: #9f1239;
@@ -191,6 +321,10 @@
         margin-right: 6px;
       }
 
+      .spinner[hidden] {
+        display: none;
+      }
+
       @keyframes spin {
         to { transform: rotate(360deg); }
       }
@@ -198,75 +332,79 @@
   </head>
   <body>
     <h1>Bookmark Advisor</h1>
-    <p>Generate or import a <code>reviewed-plan.json</code>, review the preflight summary, and execute it inside Edge.</p>
 
     <div class="tabs" role="tablist" aria-label="Bookmark Advisor sections">
-      <button id="plan-tab-btn" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="plan-tab">Plan</button>
-      <button id="settings-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="settings-tab">LLM Settings</button>
+      <button id="plan-tab-btn" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="plan-tab" data-i18n="tab_plan">Plan</button>
+      <button id="settings-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="settings-tab" data-i18n="tab_llm">LLM</button>
+      <button id="preferences-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="preferences-tab" data-i18n="tab_prefs">偏好</button>
     </div>
 
     <section id="plan-tab" class="tab-panel" role="tabpanel" aria-labelledby="plan-tab-btn">
       <div class="panel">
-        <strong>AI planning via HTTPS</strong>
+        <strong data-i18n="label_ai_planning">Generate organization plan</strong>
         <div class="row">
           <div>
-            <label for="focus-path">Focus folder</label>
-            <input id="focus-path" type="text" value="/收藏夹栏/奇妙小工具">
+            <label for="focus-path" data-i18n="label_focus_folder">Focus folder</label>
+            <select id="focus-path">
+              <option value="" data-i18n="opt_all_bookmarks">全部书签</option>
+            </select>
           </div>
           <div>
-            <label for="max-actions">Max actions</label>
+            <label for="max-actions" data-i18n="label_max_actions">Max actions</label>
             <input id="max-actions" type="number" min="1" max="80" value="40">
           </div>
         </div>
-        <p class="hint">Uses the saved LLM endpoint, model, and encrypted API key from Settings. Fast mode sends bookmark titles, URLs, domains, and folder paths as evidence.</p>
-        <textarea id="user-instruction" rows="2" placeholder="Describe how you want the AI to organize your bookmarks (optional)"></textarea>
-        <button id="generate-ai-btn" type="button">Generate AI Plan</button>
+        <label for="user-instruction" data-i18n="label_user_instruction">Organization notes</label>
+        <textarea id="user-instruction" rows="2" data-i18n-placeholder="placeholder_instruction" placeholder="Describe how you want the AI to organize your bookmarks (optional)"></textarea>
+        <button id="generate-ai-btn" type="button" data-i18n="btn_generate">Generate AI Plan</button>
+        <div style="height: 8px;"></div>
+        <button id="revise-ai-btn" class="secondary" type="button" disabled data-i18n="btn_revise">Revise Loaded Plan with Instruction</button>
       </div>
 
       <div class="panel">
         <input id="plan-file" type="file" accept=".json,application/json">
-        <p class="hint">JSON syntax and plan structure are linted before execution. Only approved or edited actions run.</p>
       </div>
 
       <div class="panel">
         <div><span id="spinner" class="spinner" hidden></span><span id="status">No plan loaded yet.</span></div>
         <div class="stats" id="stats" hidden>
-          <div class="stat"><strong id="total-count">0</strong><span>Total</span></div>
-          <div class="stat"><strong id="executable-count">0</strong><span>Executable</span></div>
-          <div class="stat"><strong id="review-count">0</strong><span>Review</span></div>
-          <div class="stat"><strong id="error-count">0</strong><span>Errors</span></div>
-          <div class="stat"><strong id="warning-count">0</strong><span>Warnings</span></div>
+          <div class="stat"><strong id="total-count">0</strong><span data-i18n="stat_total">Total</span></div>
+          <div class="stat"><strong id="executable-count">0</strong><span data-i18n="stat_executable">Executable</span></div>
+          <div class="stat"><strong id="review-count">0</strong><span data-i18n="stat_review">Review</span></div>
+          <div class="stat"><strong id="error-count">0</strong><span data-i18n="stat_errors">Errors</span></div>
+          <div class="stat"><strong id="warning-count">0</strong><span data-i18n="stat_warnings">Warnings</span></div>
         </div>
       </div>
 
       <div class="panel">
-        <strong>Action preview</strong>
-        <ul id="preview-list"></ul>
+        <strong data-i18n="label_action_preview">Action preview</strong>
+        <div id="preview-list"></div>
       </div>
 
       <div class="panel">
-        <button id="export-snapshot-btn" type="button">Export Current Snapshot</button>
+        <button id="export-snapshot-btn" type="button" data-i18n="btn_export">Export Current Snapshot</button>
       </div>
 
-      <button id="execute-btn" disabled>Execute Reviewed Plan</button>
+      <button id="execute-btn" disabled data-i18n="btn_execute">Execute Reviewed Plan</button>
       <div style="height: 8px;"></div>
-      <button id="download-report-btn" disabled>Download Execution Report</button>
+      <button id="download-report-btn" disabled data-i18n="btn_download_report">Download Execution Report</button>
     </section>
 
     <section id="settings-tab" class="tab-panel" role="tabpanel" aria-labelledby="settings-tab-btn" hidden>
       <div class="panel">
-        <strong>OpenAI-compatible LLM</strong>
-        <label for="api-base-url">API base URL</label>
+        <strong data-i18n="label_llm_config">OpenAI-compatible LLM</strong>
+        <label for="api-base-url" data-i18n="label_api_url">API base URL</label>
         <input id="api-base-url" type="text" value="https://api.openai.com/v1" spellcheck="false">
         <p class="hint" id="endpoint-preview">Requests will use the configured provider base URL.</p>
 
         <div class="wide-row">
           <div>
-            <label for="api-style">Endpoint mode</label>
+            <label for="api-style" data-i18n="label_endpoint_mode">Endpoint mode</label>
             <select id="api-style">
               <option value="auto">Auto fallback</option>
               <option value="responses">Responses API</option>
               <option value="chat_completions">Chat Completions</option>
+              <option value="completions">Completions</option>
             </select>
           </div>
           <div>
@@ -275,18 +413,50 @@
           </div>
         </div>
 
-        <label for="api-key">API key</label>
+        <label for="api-key" data-i18n="label_api_key">API key</label>
         <input id="api-key" type="password" autocomplete="off" placeholder="sk-..., sk-or-..., provider key">
 
         <div class="button-row">
-          <button id="save-credentials-btn" class="secondary" type="button">Save Credentials</button>
-          <button id="forget-key-btn" class="danger" type="button">Forget Key</button>
+          <button id="save-credentials-btn" class="secondary" type="button" data-i18n="btn_save">Save Credentials</button>
+          <button id="forget-key-btn" class="danger" type="button" data-i18n="btn_forget">Forget Key</button>
         </div>
         <p class="hint" id="key-storage-status">No saved key checked yet.</p>
-        <p class="hint">Inputs auto-save as popup drafts when this window closes. API key drafts and saved keys are stored with AES-GCM encryption. The AES key is derived automatically with SHA-256 from this extension install, so there is no unlock password to remember.</p>
       </div>
     </section>
 
+    <section id="preferences-tab" class="tab-panel" role="tabpanel" aria-labelledby="preferences-tab-btn" hidden>
+      <div class="panel">
+        <strong data-i18n="label_preferences">规划偏好</strong>
+
+        <label for="pref-lang" data-i18n="label_language">Language</label>
+        <select id="pref-lang">
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+        </select>
+
+        <label for="pref-protect-root" data-i18n="label_protect_root">顶层散书签保护</label>
+        <select id="pref-protect-root">
+          <option value="yes" data-i18n="opt_protect_yes">保护 — 不自动整理根目录下的散书签</option>
+          <option value="no" data-i18n="opt_protect_no">允许 — 可将根目录散书签归入子文件夹</option>
+        </select>
+
+        <label for="pref-sort-order" data-i18n="label_sort_order">整理后排序</label>
+        <select id="pref-sort-order">
+          <option value="none" data-i18n="opt_sort_none">不改变顺序（保持原样）</option>
+          <option value="alpha-asc" data-i18n="opt_sort_asc">按标题字母升序 (A→Z)</option>
+          <option value="alpha-desc" data-i18n="opt_sort_desc">按标题字母降序 (Z→A)</option>
+        </select>
+
+        <label for="pref-planning-style" data-i18n="label_planning_style">规划风格</label>
+        <select id="pref-planning-style">
+          <option value="balanced" data-i18n="opt_style_balanced">均衡 — 合理移动，不确定的保留审查</option>
+          <option value="conservative" data-i18n="opt_style_conservative">保守 — 只移动非常确定的，其余保持原位</option>
+          <option value="aggressive" data-i18n="opt_style_aggressive">积极 — 尽量全部归类，允许创建新文件夹</option>
+        </select>
+      </div>
+    </section>
+
+    <script src="storage_helpers.js"></script>
     <script src="plan_lint.js"></script>
     <script src="popup.js"></script>
   </body>
