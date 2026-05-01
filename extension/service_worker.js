@@ -8,7 +8,7 @@ const EXECUTION_ORDER = [
   "move_bookmark",
   "remove_duplicate",
 ];
-const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
+const EXECUTABLE_STATUSES = new Set(["approved", "edited", "proposed"]);
 const ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
 let runningJobId = "";
 

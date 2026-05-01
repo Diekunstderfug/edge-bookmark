@@ -477,7 +477,7 @@
       }
       return {
         ...action,
-        status: "blocked",
+        status: "proposed",
         details: {
           ...action.details,
           finalize_reason: "below-threshold",
@@ -499,7 +499,7 @@
         review_method: "extension_fast_title_domain",
         total_actions: finalized.length,
         approved_actions: finalized.filter((action) => ["approved", "edited"].includes(action.status)).length,
-        blocked_actions: finalized.filter((action) => action.status === "blocked").length,
+        blocked_actions: finalized.filter((action) => action.status === "blocked" || action.status === "proposed").length,
       },
       actions: finalized,
     };
@@ -850,6 +850,8 @@
       "Only propose create_folder when a genuinely new category is justified.",
       `Propose at most ${maxActions} high-value actions.`,
       "Use keep_for_review for ambiguous, risky, or low-confidence items.",
+      "Choosing any action other than keep_for_review means you recommend executing it — the extension will run it directly.",
+      "Confidence reflects how sure you are the action is correct, not whether it needs human review. Only use keep_for_review when you want human review.",
       "When title and domain evidence is insufficient to determine a bookmark's purpose or category, use keep_for_review instead of guessing.",
       "In the reason field for uncertain items, note that web content inspection would help classify the bookmark accurately.",
       "Only bookmarks with review_status=reviewed may be auto-classified; unresolved bookmarks must stay in keep_for_review.",
