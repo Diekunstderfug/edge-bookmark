@@ -405,13 +405,27 @@ function locatorLabel(action) {
   return bookmark.title || bookmark.id || action.bookmark_id || folder.path || folder.id || action.folder_id || "";
 }
 
+/** Parity with Python bookmark_advisor.utils.normalize_url — same steps, same order. */
 function normalizeUrl(url) {
+  if (!url) return "";
   try {
-    const parsed = new URL(url);
-    parsed.hash = "";
-    const keysToRemove = [];
-    for (const [key] of parsed.searchParams.entries()) {
-      const lowered = key.toLowerCase();
+    var parsed = new URL(url);
+    var scheme = parsed.protocol.slice(0, -1);
+    var host = parsed.host;
+    var path = decodeURIComponent(parsed.pathname);
+    if (
+      (parsed.protocol === "http:" && (parsed.port === "80" || parsed.port === "")) ||
+      (parsed.protocol === "https:" && (parsed.port === "443" || parsed.port === ""))
+    ) {
+      host = parsed.hostname;
+    }
+    if (path.length > 1) {
+      path = path.replace(/\/+$/, "") || "/";
+    }
+    var kept = [];
+    for (var entry of parsed.searchParams.entries()) {
+      var key = entry[0], value = entry[1];
+      var lowered = key.toLowerCase();
       if (
         lowered === "spm" ||
         lowered === "ref" ||
@@ -420,16 +434,24 @@ function normalizeUrl(url) {
         lowered === "_" ||
         lowered.startsWith("utm_")
       ) {
-        keysToRemove.push(key);
+        continue;
       }
+      if (value === "") {
+        continue;
+      }
+      kept.push([key, value]);
     }
-    for (const key of keysToRemove) {
-      parsed.searchParams.delete(key);
-    }
-    if (parsed.pathname.length > 1) {
-      parsed.pathname = parsed.pathname.replace(/\/+$/, "");
-    }
-    return parsed.toString();
+    kept.sort(function (a, b) {
+      if (a[0] < b[0]) return -1;
+      if (a[0] > b[0]) return 1;
+      if (a[1] < b[1]) return -1;
+      if (a[1] > b[1]) return 1;
+      return 0;
+    });
+    var query = kept
+      .map(function (pair) { return encodeURIComponent(pair[0]) + "=" + encodeURIComponent(pair[1]); })
+      .join("&");
+    return scheme + "://" + host + path + (query ? "?" + query : "");
   } catch (_error) {
     return url || "";
   }
