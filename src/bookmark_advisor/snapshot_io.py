@@ -18,6 +18,7 @@ from bookmark_advisor.models import (
     UrlReviewItem,
 )
 from bookmark_advisor.parser import BookmarkSnapshot
+from bookmark_advisor.utils import atomic_write_json
 
 
 def build_snapshot_document(
@@ -67,11 +68,7 @@ def build_snapshot_document(
 
 
 def write_snapshot_document(document: SnapshotDocument, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(document.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(destination, document.to_dict())
 
 
 def load_snapshot_document(path: Path) -> dict:
@@ -100,11 +97,7 @@ def build_review_queue_document(snapshot_document: dict) -> ReviewQueueDocument:
 
 
 def write_review_queue_document(document: ReviewQueueDocument, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(document.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(destination, document.to_dict())
 
 
 def load_review_queue_document(path: Path) -> dict:
@@ -112,11 +105,7 @@ def load_review_queue_document(path: Path) -> dict:
 
 
 def write_url_review_document(document: UrlReviewDocument, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(document.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(destination, document.to_dict())
 
 
 def load_url_review_document(path: Path) -> dict:
@@ -185,11 +174,7 @@ def build_enriched_snapshot_document(
 
 
 def write_enriched_snapshot_document(document: EnrichedSnapshotDocument, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(document.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(destination, document.to_dict())
 
 
 def url_requires_review(url: str) -> bool:

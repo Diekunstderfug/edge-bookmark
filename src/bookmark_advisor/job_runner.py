@@ -23,6 +23,7 @@ from bookmark_advisor.snapshot_io import (
     write_review_queue_document,
     write_snapshot_document,
 )
+from bookmark_advisor.utils import atomic_write_json
 
 PHASES = ("snapshot", "review", "enrich", "plan", "finalize", "apply", "done")
 EXECUTION_BACKENDS = {"extension", "write_source"}
@@ -78,11 +79,7 @@ def init_reorg_job(
 
 
 def write_reorg_job(job: ReorgJob, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(job.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(destination, job.to_dict())
 
 
 def load_reorg_job(path: Path) -> ReorgJob:
