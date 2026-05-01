@@ -1,0 +1,70 @@
+{
+  "defaults": {
+    "protect_root_loose_bookmarks": true,
+    "allow_new_folders_in_advise": true,
+    "generic_new_folder_names": ["EDU", "ORG", "COM", "NET", "CN", "WWW"]
+  },
+  "protected_paths": ["/收藏夹栏", "/其他收藏夹", "/移动收藏夹", "/工作区"],
+  "category_hints": {
+    "ai": ["ai", "openai", "chatgpt", "deepseek", "gemini", "claude", "llm", "prompt", "copilot"],
+    "machinelearning": ["machinelearning", "ml", "xgboost", "sklearn", "pytorch", "tensorflow"],
+    "编程": ["python", "programming", "coding", "cpp", "javascript", "java", "git", "stackoverflow"],
+    "量化": ["quant", "trading", "backtest", "alpha", "strategy", "vnpy", "finance"],
+    "finance": ["finance", "trading", "exchange", "crypto", "bybit", "stocks"],
+    "math": ["math", "latex", "algebra", "calculus", "statistics"],
+    "library": ["library", "book", "ebook", "paper", "libgen", "zlibrary", "reading"],
+    "zotero": ["zotero", "citation", "reference", "bib", "ris"],
+    "database": ["database", "dataset", "db", "portal", "archive", "catalog"],
+    "生信和基因组学": ["bioinformatics", "genome", "genomics", "gene", "gatk", "rna", "variant", "sequencing"],
+    "rna": ["rna", "transcript", "transcriptome", "splicing", "mrna", "scrna"]
+  },
+  "folder_relocations": [
+    {
+      "from": "/收藏夹栏/TNBC Datasets",
+      "to": "/收藏夹栏/Database",
+      "reason": "Preferred category mapping places TNBC Datasets under Database"
+    }
+  ],
+  "bookmark_relocations": [
+    {
+      "match": { "folder_path": "/收藏夹栏/AI", "title_contains": "MCP" },
+      "to": "/收藏夹栏/AI/mcp",
+      "reason": "MCP documentation and ecosystem links belong in the dedicated mcp folder"
+    },
+    {
+      "match": { "folder_path": "/收藏夹栏/AI", "url_contains": "modelcontextprotocol" },
+      "to": "/收藏夹栏/AI/mcp",
+      "reason": "Model Context Protocol references belong in the dedicated mcp folder"
+    },
+    {
+      "match": { "folder_path": "/收藏夹栏/AI", "url_contains": "mcpcn.com" },
+      "to": "/收藏夹栏/AI/mcp",
+      "reason": "MCP references belong in the dedicated mcp folder"
+    },
+    {
+      "match": { "folder_path": "/收藏夹栏/AI", "title_contains": "FastMCP" },
+      "to": "/收藏夹栏/AI/mcp",
+      "reason": "FastMCP is part of the MCP toolchain"
+    },
+    {
+      "match": { "folder_path": "/收藏夹栏/AI", "title_contains": "awesome-mcp-servers" },
+      "to": "/收藏夹栏/AI/mcp",
+      "reason": "Awesome MCP Servers belongs in the dedicated mcp folder"
+    },
+    {
+      "match": { "folder_path": "/收藏夹栏/AI", "title_contains": "Skills Marketplace" },
+      "to": "/收藏夹栏/AI/skill",
+      "reason": "Skills Marketplace belongs in the dedicated skill folder"
+    },
+    {
+      "match": { "folder_path": "/收藏夹栏/AI", "url_contains": "skillsmp.com" },
+      "to": "/收藏夹栏/AI/skill",
+      "reason": "Skills marketplace links belong in the dedicated skill folder"
+    },
+    {
+      "match": { "folder_path": "/收藏夹栏/AI", "title_equals": "Zotero | Your personal research assistant" },
+      "to": "/收藏夹栏/Zotero",
+      "reason": "Zotero links belong in the Zotero folder rather than AI"
+    }
+  ]
+}

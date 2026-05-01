@@ -20,61 +20,48 @@
     "create_folder",
     "remove_duplicate",
   ]);
-  const PROTECTED_PATHS = ["/收藏夹栏", "/其他收藏夹", "/移动收藏夹", "/工作区"];
-  const FORCED_FOLDER_RELOCATIONS = [
-    {
-      from: "/收藏夹栏/TNBC Datasets",
-      to: "/收藏夹栏/Database",
-      reason: "Preferred category mapping places TNBC Datasets under Database",
-    },
-  ];
-  const FORCED_BOOKMARK_RELOCATIONS = [
-    {
-      match: { folder_path: "/收藏夹栏/AI", title_contains: "MCP" },
-      to: "/收藏夹栏/AI/mcp",
-      reason: "MCP documentation and ecosystem links belong in the dedicated mcp folder",
-    },
-    {
-      match: { folder_path: "/收藏夹栏/AI", url_contains: "modelcontextprotocol" },
-      to: "/收藏夹栏/AI/mcp",
-      reason: "Model Context Protocol references belong in the dedicated mcp folder",
-    },
-    {
-      match: { folder_path: "/收藏夹栏/AI", url_contains: "mcpcn.com" },
-      to: "/收藏夹栏/AI/mcp",
-      reason: "MCP references belong in the dedicated mcp folder",
-    },
-    {
-      match: { folder_path: "/收藏夹栏/AI", title_contains: "FastMCP" },
-      to: "/收藏夹栏/AI/mcp",
-      reason: "FastMCP is part of the MCP toolchain",
-    },
-    {
-      match: { folder_path: "/收藏夹栏/AI", title_contains: "awesome-mcp-servers" },
-      to: "/收藏夹栏/AI/mcp",
-      reason: "Awesome MCP Servers belongs in the dedicated mcp folder",
-    },
-    {
-      match: { folder_path: "/收藏夹栏/AI", title_contains: "Skills Marketplace" },
-      to: "/收藏夹栏/AI/skill",
-      reason: "Skills Marketplace belongs in the dedicated skill folder",
-    },
-    {
-      match: { folder_path: "/收藏夹栏/AI", url_contains: "skillsmp.com" },
-      to: "/收藏夹栏/AI/skill",
-      reason: "Skills marketplace links belong in the dedicated skill folder",
-    },
-    {
-      match: {
-        folder_path: "/收藏夹栏/AI",
-        title_equals: "Zotero | Your personal research assistant",
-      },
-      to: "/收藏夹栏/Zotero",
-      reason: "Zotero links belong in the Zotero folder rather than AI",
-    },
-  ];
+
+  // ── Fast rules: loaded from packaged JSON, cached after first load ──
+  var _fastRulesCache = null;
+
+  var _FALLBACK_RULES = {
+    defaults: { protect_root_loose_bookmarks: true, allow_new_folders_in_advise: true },
+    protected_paths: ["/收藏夹栏", "/其他收藏夹", "/移动收藏夹", "/工作区"],
+    category_hints: {},
+    folder_relocations: [],
+    bookmark_relocations: [],
+  };
+
+  function _cachedFastRules() {
+    return _fastRulesCache || _FALLBACK_RULES;
+  }
+
+  async function loadFastRules() {
+    if (_fastRulesCache) {
+      return _fastRulesCache;
+    }
+    try {
+      var rulesUrl = chrome.runtime.getURL("fast_rules.json");
+      var response = await fetch(rulesUrl);
+      if (!response.ok) {
+        return _FALLBACK_RULES;
+      }
+      var data = await response.json();
+      _fastRulesCache = {
+        defaults: data.defaults || _FALLBACK_RULES.defaults,
+        protected_paths: Array.isArray(data.protected_paths) ? data.protected_paths : _FALLBACK_RULES.protected_paths,
+        category_hints: data.category_hints || {},
+        folder_relocations: Array.isArray(data.folder_relocations) ? data.folder_relocations : [],
+        bookmark_relocations: Array.isArray(data.bookmark_relocations) ? data.bookmark_relocations : [],
+      };
+      return _fastRulesCache;
+    } catch (_error) {
+      return _FALLBACK_RULES;
+    }
+  }
 
   async function generateReviewedPlan(options) {
+    await loadFastRules();
     const apiKey = String(options.apiKey || "").trim();
     if (!apiKey) {
       throw new Error("OpenAI API key is required for HTTPS planning.");
@@ -339,7 +326,7 @@
     if (!bookmark) {
       return blockForReview(action, "Bookmark locator could not be verified in the current snapshot.");
     }
-    if (PROTECTED_PATHS.includes(bookmark.folder_path)) {
+    if (_cachedFastRules().protected_paths.includes(bookmark.folder_path)) {
       return blockForReview(action, "Blocked by protected root loose-bookmark rule.");
     }
     return action;
@@ -374,9 +361,11 @@
   }
 
   function forcedRuleActions(snapshot, folderIndex) {
-    const actions = [];
-    for (const rule of FORCED_FOLDER_RELOCATIONS) {
-      const folder = folderIndex.get(rule.from);
+    var rules = _cachedFastRules();
+    var actions = [];
+    for (var i = 0; i < rules.folder_relocations.length; i++) {
+      var rule = rules.folder_relocations[i];
+      var folder = folderIndex.get(rule.from);
       if (!folder) {
         continue;
       }
@@ -401,24 +390,25 @@
       }));
     }
 
-    for (const rule of FORCED_BOOKMARK_RELOCATIONS) {
+    for (var j = 0; j < rules.bookmark_relocations.length; j++) {
+      var bkRule = rules.bookmark_relocations[j];
       for (const bookmark of snapshot.bookmarks || []) {
-        if (!bookmarkMatchesRule(bookmark, rule)) {
+        if (!bookmarkMatchesRule(bookmark, bkRule)) {
           continue;
         }
         actions.push(normalizeAction({
           action_type: "move_bookmark",
           status: "approved",
-          reason: rule.reason,
+          reason: bkRule.reason,
           confidence: 0.98,
           bookmark_locator: bookmarkLocator(bookmark),
           from_path: bookmark.folder_path,
-          to_path: rule.to,
+          to_path: bkRule.to,
           details: {
             evidence: {
               review_status: bookmark.review_status || "reviewed",
               review_method: "forced-rule",
-              summary: rule.reason,
+              summary: bkRule.reason,
               rule_override: "forced-bookmark-relocation",
             },
             guardrail: "forced-bookmark-relocation",
@@ -450,23 +440,25 @@
   function buildSystemPrompt(maxActions) {
     return [
       "You are an expert bookmark organizer.",
-      "Return JSON only through the provided schema.",
+      "Return JSON only.",
       "Focus on semantic organization, not cosmetic renaming.",
-      `Propose at most ${maxActions} high-value actions.`,
       "Prefer moving bookmarks into semantically appropriate existing folders.",
       "Only propose create_folder when a genuinely new category is justified.",
+      `Propose at most ${maxActions} high-value actions.`,
       "Use keep_for_review for ambiguous, risky, or low-confidence items.",
       "Loose bookmarks directly under protected root paths must stay in place.",
+      "Only bookmarks with review_status=reviewed may be auto-classified; unresolved bookmarks must stay in keep_for_review.",
       "The browser extension will lint and post-process your output before execution.",
     ].join(" ");
   }
 
   function buildUserPrompt(snapshot, focusPath) {
+    var rules = _cachedFastRules();
     const rulesSummary = {
-      protect_root_loose_bookmarks: true,
-      protected_paths: PROTECTED_PATHS,
-      forced_folder_relocations: FORCED_FOLDER_RELOCATIONS,
-      forced_bookmark_relocations: FORCED_BOOKMARK_RELOCATIONS,
+      protect_root_loose_bookmarks: rules.defaults.protect_root_loose_bookmarks,
+      protected_paths: rules.protected_paths,
+      forced_folder_relocations: rules.folder_relocations,
+      forced_bookmark_relocations: rules.bookmark_relocations,
       fast_mode_warning: "URL review evidence is limited to current bookmark title, URL, domain, and folder path.",
     };
     const prompt = [
@@ -484,11 +476,17 @@
   }
 
   function compactSnapshot(snapshot) {
+    var sanitizedBookmarks = (snapshot.bookmarks || []).map(function (bookmark) {
+      return Object.assign({}, bookmark, {
+        title: sanitizeForPrompt(bookmark.title),
+        url: sanitizeForPrompt(bookmark.url),
+      });
+    });
     return {
       created_at: snapshot.created_at,
       focus_path: snapshot.focus_path,
       folders: snapshot.folders || [],
-      bookmarks: snapshot.bookmarks || [],
+      bookmarks: sanitizedBookmarks,
     };
   }
 
@@ -769,6 +767,16 @@
     }
   }
 
+  function sanitizeForPrompt(text) {
+    if (!text) return "";
+    var cleaned = String(text)
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
+      .replace(/[\r\n\t]/g, " ")
+      .replace(/ {2,}/g, " ")
+      .trim();
+    return cleaned.length > 500 ? cleaned.slice(0, 500) : cleaned;
+  }
+
   function positiveInteger(value, fallback) {
     const numberValue = Number(value);
     if (!Number.isFinite(numberValue) || numberValue < 0) {
@@ -784,5 +792,6 @@
 
   globalScope.BookmarkAdvisorAI = {
     generateReviewedPlan,
+    loadFastRules,
   };
 })(globalThis);
