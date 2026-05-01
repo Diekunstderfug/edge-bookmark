@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import contextlib
+import json
+import os
 import re
+import tempfile
 from collections import Counter
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 STOPWORDS = {
@@ -89,4 +94,56 @@ def slugify(value: str) -> str:
     if not parts:
         return "untitled"
     return "-".join(parts[:6])
+
+
+def sanitize_for_prompt(text: str) -> str:
+    """Strip dangerous characters from text before embedding in AI prompts.
+
+    * Removes null bytes and ASCII control chars (0x00-0x1F) except
+      normal space (0x20).
+    * Replaces ``\\n``, ``\\r``, ``\\t`` with a single space.
+    * Collapses consecutive whitespace into a single space.
+    * Strips leading/trailing whitespace.
+    * Truncates to 500 characters.
+    * Preserves Unicode (CJK, emoji, etc.).
+    """
+    if not text:
+        return ""
+    # Remove null bytes and control characters except normal space
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    # Replace \r, \n, \t with space
+    cleaned = cleaned.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    # Collapse consecutive whitespace
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    cleaned = cleaned.strip()
+    return cleaned[:500]
+
+
+def atomic_write_json(
+    path: Path, data: dict[str, object] | list[object], encoding: str = "utf-8"
+) -> None:
+    """Atomically write JSON data to *path* via temp-file + os.replace().
+
+    * Creates parent directories if needed.
+    * Writes a temp file in ``path.parent`` (same filesystem) then replaces
+      the destination atomically.
+    * Uses ``ensure_ascii=False`` and ``indent=2`` for readable non-ASCII output.
+    * Cleans up the temp file on write failure when possible.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(p.parent), prefix=".atomic_", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, str(p))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
