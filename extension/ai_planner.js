@@ -78,6 +78,7 @@
       options.autoApproveThreshold,
       DEFAULT_APPROVE_THRESHOLD,
     );
+    const requestTimeoutMs = positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
     const focusPath = String(options.focusPath || "").trim();
     const userInstruction = String(options.userInstruction || "").trim();
     const onProgress = typeof options.onProgress === "function" ? options.onProgress : function () {};
@@ -89,6 +90,7 @@
       apiStyle,
       model,
       maxActions,
+      requestTimeoutMs,
       snapshot: planningSnapshot,
       focusPath,
       userInstruction,
@@ -132,6 +134,7 @@
       options.autoApproveThreshold,
       DEFAULT_APPROVE_THRESHOLD,
     );
+    const requestTimeoutMs = positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
     const focusPath = String(options.focusPath || "").trim();
     const userInstruction = String(options.userInstruction || "").trim();
     if (!userInstruction) {
@@ -146,6 +149,7 @@
       apiStyle,
       model,
       maxActions,
+      requestTimeoutMs,
       snapshot: planningSnapshot,
       existingPlan: options.existingPlan,
       userInstruction,
@@ -175,7 +179,7 @@
     };
   }
 
-  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, snapshot, focusPath, userInstruction, preferences, onProgress }) {
+  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, snapshot, focusPath, userInstruction, preferences, onProgress }) {
     const systemText = buildSystemPrompt(maxActions, preferences);
     const userText = buildUserPrompt(snapshot, focusPath, userInstruction, preferences);
     const schema = activationResponseSchema();
@@ -184,6 +188,7 @@
       apiBaseUrl,
       apiStyle,
       model,
+      requestTimeoutMs,
       schema,
       systemText,
       userText,
@@ -193,7 +198,7 @@
     });
   }
 
-  async function requestRevisionPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, snapshot, existingPlan, userInstruction, preferences, onProgress }) {
+  async function requestRevisionPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, snapshot, existingPlan, userInstruction, preferences, onProgress }) {
     const systemText = buildSystemPrompt(maxActions, preferences);
     const userText = buildRevisionUserPrompt(existingPlan, snapshot, userInstruction, preferences);
     const schema = activationResponseSchema();
@@ -202,6 +207,7 @@
       apiBaseUrl,
       apiStyle,
       model,
+      requestTimeoutMs,
       schema,
       systemText,
       userText,
@@ -211,7 +217,7 @@
     });
   }
 
-  async function requestLintedActivationPlan({ apiKey, apiBaseUrl, apiStyle, model, schema, systemText, userText, snapshot, onProgress, progressLabel }) {
+  async function requestLintedActivationPlan({ apiKey, apiBaseUrl, apiStyle, model, requestTimeoutMs, schema, systemText, userText, snapshot, onProgress, progressLabel }) {
     let retryFeedback = "";
     const errors = [];
 
@@ -224,6 +230,7 @@
             apiBaseUrl,
             apiKey,
             model,
+            requestTimeoutMs,
             schema,
             systemText,
             userText: userText + retryFeedback,
@@ -275,9 +282,9 @@
     return "Chat plain JSON";
   }
 
-  async function requestCompatibleAttempt({ attempt, apiBaseUrl, apiKey, model, schema, systemText, userText }) {
+  async function requestCompatibleAttempt({ attempt, apiBaseUrl, apiKey, model, requestTimeoutMs, schema, systemText, userText }) {
     if (attempt === "responses_json_schema") {
-      return postCompatible(endpointUrl(apiBaseUrl, "responses"), apiKey, {
+      return postCompatible(endpointUrl(apiBaseUrl, "responses"), apiKey, requestTimeoutMs, {
         model,
         input: [
           {
@@ -301,7 +308,7 @@
     }
 
     if (attempt === "completions_plain_json") {
-      return postCompatible(endpointUrl(apiBaseUrl, "completions"), apiKey, {
+      return postCompatible(endpointUrl(apiBaseUrl, "completions"), apiKey, requestTimeoutMs, {
         model,
         prompt: `${systemText}\nReturn a single JSON object and no Markdown fences.\n\n${userText}`,
         max_tokens: 4096,
@@ -325,7 +332,7 @@
     } else if (attempt === "chat_json_object") {
       chatPayload.response_format = { type: "json_object" };
     }
-    return postCompatible(endpointUrl(apiBaseUrl, "chat/completions"), apiKey, chatPayload);
+    return postCompatible(endpointUrl(apiBaseUrl, "chat/completions"), apiKey, requestTimeoutMs, chatPayload);
   }
 
   function buildRequestAttempts(apiStyle, apiBaseUrl) {
@@ -363,9 +370,10 @@
     return messages;
   }
 
-  async function postCompatible(url, apiKey, body) {
+  async function postCompatible(url, apiKey, timeoutMs, body) {
+    const effectiveTimeout = timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
     let response;
     try {
       response = await fetch(url, {
@@ -379,7 +387,7 @@
       });
     } catch (error) {
       if (error && error.name === "AbortError") {
-        throw new Error(`Request timed out after ${Math.round(DEFAULT_REQUEST_TIMEOUT_MS / 1000)}s: ${url}`);
+        throw new Error(`Request timed out after ${Math.round(effectiveTimeout / 1000)}s: ${url}`);
       }
       throw error;
     } finally {

@@ -416,6 +416,9 @@
         <label for="api-key" data-i18n="label_api_key">API key</label>
         <input id="api-key" type="password" autocomplete="off" placeholder="sk-..., sk-or-..., provider key">
 
+        <label for="request-timeout" data-i18n="label_request_timeout">Request timeout (seconds)</label>
+        <input id="request-timeout" type="number" min="10" max="600" value="120">
+
         <div class="button-row">
           <button id="save-credentials-btn" class="secondary" type="button" data-i18n="btn_save">Save Credentials</button>
           <button id="forget-key-btn" class="danger" type="button" data-i18n="btn_forget">Forget Key</button>

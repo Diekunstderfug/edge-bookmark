@@ -54,7 +54,7 @@ class ExtensionPopupStateTest(unittest.TestCase):
         }}
         const ids = [
           'plan-file', 'api-key', 'api-base-url', 'api-style', 'endpoint-preview',
-          'key-storage-status', 'model', 'max-actions', 'focus-path', 'user-instruction',
+          'key-storage-status', 'model', 'request-timeout', 'max-actions', 'focus-path', 'user-instruction',
           'status', 'stats', 'total-count', 'executable-count', 'review-count',
           'error-count', 'warning-count', 'preview-list', 'execute-btn',
           'export-snapshot-btn', 'generate-ai-btn', 'revise-ai-btn', 'save-credentials-btn',

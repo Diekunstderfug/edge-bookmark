@@ -22,6 +22,7 @@ const STRINGS = {
     label_api_url: "API base URL",
     label_endpoint_mode: "Endpoint mode",
     label_api_key: "API key",
+    label_request_timeout: "Request timeout (seconds)",
     label_action_preview: "Action preview",
     label_preferences: "Preferences",
     label_language: "Language",
@@ -113,6 +114,7 @@ const STRINGS = {
     label_api_url: "API 地址",
     label_endpoint_mode: "\u7aef\u70b9\u6a21\u5f0f",
     label_api_key: "API \u5bc6\u94a5",
+    label_request_timeout: "\u8bf7\u6c42\u8d85\u65f6\uff08\u79d2\uff09",
     label_action_preview: "整理预览",
     label_preferences: "\u504f\u597d\u8bbe\u7f6e",
     label_language: "\u8bed\u8a00",
@@ -215,6 +217,7 @@ const DEFAULT_LLM_SETTINGS = {
   apiBaseUrl: "https://api.openai.com/v1",
   apiStyle: "auto",
   model: "gpt-4o-mini",
+  requestTimeout: "120",
 };
 const DEFAULT_PREFERENCES = {
   protectRootLooseBookmarks: "yes",
@@ -236,6 +239,7 @@ const apiStyleInput = document.getElementById("api-style");
 const endpointPreviewEl = document.getElementById("endpoint-preview");
 const keyStorageStatusEl = document.getElementById("key-storage-status");
 const modelInput = document.getElementById("model");
+const requestTimeoutInput = document.getElementById("request-timeout");
 const maxActionsInput = document.getElementById("max-actions");
 const focusPathInput = document.getElementById("focus-path");
 const userInstructionInput = document.getElementById("user-instruction");
@@ -434,6 +438,7 @@ generateAiButton.addEventListener("click", async () => {
         apiStyle: settings.apiStyle,
         model: settings.model,
         maxActions: maxActionsInput.value,
+        requestTimeoutMs: (parseInt(requestTimeoutInput.value, 10) || 120) * 1000,
         focusPath: focusPathInput.value,
         userInstruction: userInstructionInput.value.trim(),
         preferences: readPreferences(),
@@ -527,6 +532,7 @@ reviseAiButton.addEventListener("click", async () => {
         apiStyle: settings.apiStyle,
         model: settings.model,
         maxActions: maxActionsInput.value,
+        requestTimeoutMs: (parseInt(requestTimeoutInput.value, 10) || 120) * 1000,
         focusPath: focusPathInput.value,
         userInstruction,
         preferences: readPreferences(),
@@ -667,6 +673,7 @@ function attachInputCacheHandlers() {
     apiStyleInput,
     modelInput,
     apiKeyInput,
+    requestTimeoutInput,
     focusPathInput,
     maxActionsInput,
     userInstructionInput,
@@ -744,6 +751,7 @@ function buildUiDraftSnapshot() {
     apiBaseUrl: apiBaseUrlInput.value,
     apiStyle: apiStyleInput.value,
     model: modelInput.value,
+    requestTimeout: requestTimeoutInput.value,
     focusPath: focusPathInput.value,
     maxActions: maxActionsInput.value,
     userInstruction: userInstructionInput.value,
@@ -1321,6 +1329,7 @@ async function loadUiDraft() {
     apiBaseUrl: typeof saved.apiBaseUrl === "string" ? saved.apiBaseUrl : "",
     apiStyle: typeof saved.apiStyle === "string" ? saved.apiStyle : "",
     model: typeof saved.model === "string" ? saved.model : "",
+    requestTimeout: typeof saved.requestTimeout === "string" ? saved.requestTimeout : DEFAULT_LLM_SETTINGS.requestTimeout,
     focusPath: typeof saved.focusPath === "string" ? saved.focusPath : DEFAULT_UI_DRAFT.focusPath,
     maxActions: typeof saved.maxActions === "string" ? saved.maxActions : DEFAULT_UI_DRAFT.maxActions,
     userInstruction: typeof saved.userInstruction === "string" ? saved.userInstruction : "",
@@ -1337,6 +1346,7 @@ function applyUiDraft(draft) {
   if (draft.model) {
     modelInput.value = draft.model;
   }
+  requestTimeoutInput.value = draft.requestTimeout || DEFAULT_LLM_SETTINGS.requestTimeout;
   focusPathInput.value = draft.focusPath || DEFAULT_UI_DRAFT.focusPath;
   maxActionsInput.value = draft.maxActions || DEFAULT_UI_DRAFT.maxActions;
   if (draft.userInstruction) {
@@ -1366,6 +1376,7 @@ function applyLlmSettings(settings) {
   apiBaseUrlInput.value = settings.apiBaseUrl;
   apiStyleInput.value = settings.apiStyle;
   modelInput.value = settings.model;
+  requestTimeoutInput.value = settings.requestTimeout || DEFAULT_LLM_SETTINGS.requestTimeout;
 }
 
 function readLlmSettingsFromInputs() {
@@ -1373,6 +1384,7 @@ function readLlmSettingsFromInputs() {
     apiBaseUrl: apiBaseUrlInput.value,
     apiStyle: apiStyleInput.value,
     model: modelInput.value,
+    requestTimeout: requestTimeoutInput.value,
   });
 }
 
@@ -1381,6 +1393,7 @@ function normalizeLlmSettings(settings) {
     apiBaseUrl: normalizeHttpsBaseUrl(settings.apiBaseUrl || DEFAULT_LLM_SETTINGS.apiBaseUrl),
     apiStyle: normalizeApiStyle(settings.apiStyle || DEFAULT_LLM_SETTINGS.apiStyle),
     model: String(settings.model || DEFAULT_LLM_SETTINGS.model).trim(),
+    requestTimeout: String(settings.requestTimeout || DEFAULT_LLM_SETTINGS.requestTimeout).trim(),
   };
 }
 
