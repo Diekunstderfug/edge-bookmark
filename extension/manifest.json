@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "description": "Generate, review, and apply Bookmark Advisor plans with chrome.bookmarks APIs.",
   "permissions": ["bookmarks", "storage"],
-  "host_permissions": ["https://*/*"],
+  "host_permissions": [],
+  "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "service_worker.js"
   },

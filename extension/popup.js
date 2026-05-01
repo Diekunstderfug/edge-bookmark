@@ -90,6 +90,11 @@ saveCredentialsButton.addEventListener("click", async () => {
 
   saveCredentialsButton.disabled = true;
   try {
+    const hostGranted = await ensureHostPermission(settings.apiBaseUrl);
+    if (!hostGranted) {
+      updateKeyStorageStatus("Host permission denied. Allow access to the API origin when prompted, then try again.", "error");
+      return;
+    }
     await saveLlmSettings(settings);
     if (apiKeyInput.value.trim()) {
       await saveEncryptedApiKey(apiKeyInput.value.trim());
@@ -174,6 +179,10 @@ generateAiButton.addEventListener("click", async () => {
   statusEl.className = "";
 
   try {
+    const hostGranted = await ensureHostPermission(settings.apiBaseUrl);
+    if (!hostGranted) {
+      throw new Error("Host permission denied. Allow access to the API origin when prompted, then try again.");
+    }
     await saveLlmSettings(settings);
     const response = await sendRuntimeMessage({
       type: "generate-ai-plan",
@@ -611,6 +620,49 @@ function normalizeHttpsBaseUrl(value) {
   parsed.pathname = parsed.pathname.replace(/\/responses$/, "");
   parsed.pathname = parsed.pathname.replace(/\/chat\/completions$/, "");
   return parsed.toString().replace(/\/+$/, "");
+}
+
+function extractOrigin(apiBaseUrl) {
+  const normalized = normalizeHttpsBaseUrl(apiBaseUrl);
+  if (!normalized) {
+    return "";
+  }
+  const parsed = new URL(normalized);
+  return parsed.origin + "/*";
+}
+
+async function checkHostPermission(origin) {
+  if (!origin || typeof chrome === "undefined" || !chrome.permissions) {
+    return false;
+  }
+  return new Promise((resolve) => {
+    chrome.permissions.contains({ origins: [origin] }, (granted) => {
+      resolve(!!granted);
+    });
+  });
+}
+
+async function requestHostPermission(origin) {
+  if (!origin || typeof chrome === "undefined" || !chrome.permissions) {
+    return false;
+  }
+  return new Promise((resolve) => {
+    chrome.permissions.request({ origins: [origin] }, (granted) => {
+      resolve(!!granted);
+    });
+  });
+}
+
+async function ensureHostPermission(apiBaseUrl) {
+  const origin = extractOrigin(apiBaseUrl);
+  if (!origin) {
+    return false;
+  }
+  const alreadyGranted = await checkHostPermission(origin);
+  if (alreadyGranted) {
+    return true;
+  }
+  return requestHostPermission(origin);
 }
 
 function normalizeApiStyle(value) {
