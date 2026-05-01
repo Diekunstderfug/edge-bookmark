@@ -77,6 +77,7 @@
       DEFAULT_APPROVE_THRESHOLD,
     );
     const focusPath = String(options.focusPath || "").trim();
+    const userInstruction = String(options.userInstruction || "").trim();
     const planningSnapshot = buildPlanningSnapshot(snapshot, focusPath);
     const responsePayload = await requestDraftPlan({
       apiKey,
@@ -86,6 +87,7 @@
       maxActions,
       snapshot: planningSnapshot,
       focusPath,
+      userInstruction,
     });
     const reviewedPlan = finalizeDraftPlan({
       draft: responsePayload,
@@ -104,9 +106,9 @@
     };
   }
 
-  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, snapshot, focusPath }) {
+  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, snapshot, focusPath, userInstruction }) {
     const systemText = buildSystemPrompt(maxActions);
-    const userText = buildUserPrompt(snapshot, focusPath);
+    const userText = buildUserPrompt(snapshot, focusPath, userInstruction);
     const schema = semanticResponseSchema();
     const errors = [];
 
@@ -452,7 +454,7 @@
     ].join(" ");
   }
 
-  function buildUserPrompt(snapshot, focusPath) {
+  function buildUserPrompt(snapshot, focusPath, userInstruction) {
     var rules = _cachedFastRules();
     const rulesSummary = {
       protect_root_loose_bookmarks: rules.defaults.protect_root_loose_bookmarks,
@@ -472,7 +474,8 @@
     if (focusPath) {
       prompt.push(`Focus on bookmarks currently under ${focusPath}. Do not propose unrelated changes outside that focus folder.`);
     }
-    return `${prompt.join("\n")}\n\nRules:\n${JSON.stringify(rulesSummary, null, 2)}\n\nSnapshot:\n${JSON.stringify(compactSnapshot(snapshot), null, 2)}`;
+    const instructionPrefix = userInstruction ? `User instruction: ${userInstruction}\n\n` : "";
+    return `${instructionPrefix}${prompt.join("\n")}\n\nRules:\n${JSON.stringify(rulesSummary, null, 2)}\n\nSnapshot:\n${JSON.stringify(compactSnapshot(snapshot), null, 2)}`;
   }
 
   function compactSnapshot(snapshot) {
