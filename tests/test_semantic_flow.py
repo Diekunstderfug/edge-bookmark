@@ -4,12 +4,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from bookmark_advisor.ai_planner import (
+    SUPPORTED_AI_ACTIONS,
     _system_prompt,
     _user_prompt,
     apply_guardrails_to_actions,
     finalize_draft_plan,
+    semantic_action_from_dict,
 )
-from bookmark_advisor.models import BookmarkLocator, SemanticAction
+from bookmark_advisor.models import BookmarkLocator, FolderLocator, SemanticAction
 from bookmark_advisor.parser import load_snapshot
 from bookmark_advisor.rules import load_rules
 from bookmark_advisor.snapshot_io import (
@@ -209,7 +211,7 @@ class SemanticFlowTest(unittest.TestCase):
                 rules,
             )
 
-            self.assertIn("must remain in place by default", system_prompt)
+            self.assertIn("must stay in place", system_prompt)
             self.assertIn("protected root loose bookmarks", user_prompt)
             self.assertIn("only emit keep_for_review", user_prompt)
 
@@ -292,6 +294,109 @@ class SemanticFlowTest(unittest.TestCase):
         diff = diff_snapshot_documents(before, after)
         self.assertEqual(len(diff["moved_bookmarks"]), 1)
         self.assertEqual(diff["moved_bookmarks"][0]["to_path"], "/收藏夹栏/AI")
+
+    def test_rename_folder_in_supported_ai_actions(self):
+        self.assertIn("rename_folder", SUPPORTED_AI_ACTIONS)
+
+    def test_to_name_round_trip_via_to_dict_and_from_dict(self):
+        action = SemanticAction(
+            action_id="a-0001",
+            action_type="rename_folder",
+            status="proposed",
+            reason="rename AI to AI Tools",
+            confidence=0.95,
+            folder_locator=FolderLocator(
+                id="f-10",
+                name="AI",
+                path="/收藏夹栏/AI",
+            ),
+            from_path="/收藏夹栏/AI",
+            to_name="AI Tools",
+        )
+        as_dict = action.to_dict()
+        self.assertEqual(as_dict["to_name"], "AI Tools")
+        restored = semantic_action_from_dict(as_dict)
+        self.assertEqual(restored.to_name, "AI Tools")
+        self.assertEqual(restored.action_type, "rename_folder")
+        self.assertEqual(restored.folder_locator.id, "f-10")
+
+    def test_to_name_defaults_to_empty_string(self):
+        action = SemanticAction(
+            action_id="a-0001",
+            action_type="move_bookmark",
+            status="proposed",
+            reason="test",
+            confidence=0.5,
+        )
+        self.assertEqual(action.to_name, "")
+        as_dict = action.to_dict()
+        self.assertEqual(as_dict["to_name"], "")
+
+    def test_old_payload_without_to_name_deserializes_with_empty_default(self):
+        payload = {
+            "action_id": "a-0001",
+            "action_type": "move_bookmark",
+            "status": "proposed",
+            "reason": "legacy payload",
+            "confidence": 0.7,
+            "bookmark_locator": {
+                "id": "b-1",
+                "title": "X",
+                "url": "https://x.com",
+                "normalized_url": "https://x.com",
+                "folder_path": "/收藏夹栏",
+            },
+            "folder_locator": {"id": "", "name": "", "path": ""},
+            "from_path": "/收藏夹栏",
+            "to_path": "/收藏夹栏/AI",
+            "target_path": "",
+            "details": {},
+        }
+        restored = semantic_action_from_dict(payload)
+        self.assertEqual(restored.to_name, "")
+
+    def test_finalize_draft_plan_handles_rename_folder(self):
+        draft_payload = {
+            "plan_version": "2",
+            "plan_kind": "draft",
+            "source": "bookmark-advisor",
+            "created_at": "2026-04-21T10:00:00",
+            "source_snapshot": "snapshot.json",
+            "rules_source": "rules.yaml",
+            "model": "test-model",
+            "summary": {"overview": "rename test"},
+            "actions": [
+                {
+                    "action_id": "a-0001",
+                    "action_type": "rename_folder",
+                    "status": "proposed",
+                    "reason": "rename AI folder",
+                    "confidence": 0.95,
+                    "bookmark_locator": {
+                        "id": "",
+                        "title": "",
+                        "url": "",
+                        "normalized_url": "",
+                        "folder_path": "",
+                    },
+                    "folder_locator": {
+                        "id": "f-10",
+                        "name": "AI",
+                        "path": "/收藏夹栏/AI",
+                    },
+                    "from_path": "/收藏夹栏/AI",
+                    "to_path": "",
+                    "target_path": "",
+                    "to_name": "AI Tools",
+                    "details": {},
+                }
+            ],
+        }
+        reviewed = finalize_draft_plan(draft_payload, auto_approve_threshold=0.85)
+        self.assertEqual(len(reviewed.actions), 1)
+        self.assertEqual(reviewed.actions[0].status, "approved")
+        self.assertEqual(reviewed.actions[0].action_type, "rename_folder")
+        self.assertEqual(reviewed.actions[0].to_name, "AI Tools")
 
 
 if __name__ == "__main__":

@@ -14,16 +14,18 @@ from bookmark_advisor.models import (
     SemanticPlan,
 )
 from bookmark_advisor.rules import BookmarkRelocationRule, RulesConfig
+from .utils import atomic_write_json, sanitize_for_prompt
 
 SUPPORTED_AI_ACTIONS = [
     "move_bookmark",
     "move_folder",
     "create_folder",
+    "rename_folder",
     "remove_duplicate",
     "keep_for_review",
 ]
 REVIEWABLE_STATUSES = {"proposed", "approved", "rejected", "edited", "blocked"}
-EXECUTABLE_ACTIONS = {"move_bookmark", "move_folder", "create_folder", "remove_duplicate"}
+EXECUTABLE_ACTIONS = {"move_bookmark", "move_folder", "create_folder", "rename_folder", "remove_duplicate"}
 SUPPORTED_API_STYLES = {"auto", "responses", "chat_completions"}
 COMPATIBILITY_FALLBACK_STATUS_CODES = {400, 404, 405, 415, 422, 501}
 NON_RETRYABLE_STATUS_CODES = {401, 403, 429}
@@ -205,11 +207,7 @@ def apply_guardrails_to_actions(
 
 
 def write_semantic_plan(plan: SemanticPlan, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(plan.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(destination, plan.to_dict())
 
 
 def load_semantic_plan(path: Path) -> dict[str, Any]:
@@ -240,6 +238,7 @@ def semantic_action_from_dict(payload: dict[str, Any]) -> SemanticAction:
         from_path=str(payload.get("from_path", "")),
         to_path=str(payload.get("to_path", "")),
         target_path=str(payload.get("target_path", "")),
+        to_name=str(payload.get("to_name", "")),
         details=dict(payload.get("details") or {}),
     )
 
@@ -264,6 +263,8 @@ def _normalize_action(action: SemanticAction) -> SemanticAction:
     if action.action_type == "move_bookmark" and not action.from_path:
         return replace(action, from_path=action.bookmark_locator.folder_path)
     if action.action_type == "move_folder" and not action.from_path:
+        return replace(action, from_path=action.folder_locator.path)
+    if action.action_type == "rename_folder" and not action.from_path:
         return replace(action, from_path=action.folder_locator.path)
     return action
 
@@ -705,13 +706,15 @@ def _format_openai_exception(exc: Exception) -> str:
 def _system_prompt(max_actions: int, require_schema_self_validation: bool = False) -> str:
     prompt = (
         "You are an expert bookmark organizer. "
-        "Return JSON only. Focus on semantic organization, not cosmetic renaming. "
+        "Return JSON only. "
+        "Focus on semantic organization, not cosmetic renaming. "
+        "Prefer moving bookmarks into semantically appropriate existing folders. "
+        "Only propose create_folder when a genuinely new category is justified. "
         f"Propose at most {max_actions} high-value actions. "
-        "Rules are guardrails: obey protected roots, preserve user intent, and prefer moving into existing folders before creating new ones. "
-        "Loose bookmarks that sit directly under a protected root path must remain in place by default. "
-        "Do not reorganize those root-level loose bookmarks unless the user has explicitly authorized root-level cleanup. "
-        "Use keep_for_review for low-confidence or ambiguous items. "
-        "Only bookmarks with review_status=reviewed may be auto-classified; unresolved bookmarks must stay in keep_for_review."
+        "Use keep_for_review for ambiguous, risky, or low-confidence items. "
+        "Loose bookmarks directly under protected root paths must stay in place. "
+        "Only bookmarks with review_status=reviewed may be auto-classified; "
+        "unresolved bookmarks must stay in keep_for_review."
     )
     if require_schema_self_validation:
         prompt += " You must ensure the JSON object matches the provided schema exactly."
@@ -744,10 +747,18 @@ def _user_prompt(
             for rule in rules.bookmark_relocations
         ],
     }
+    sanitized_bookmarks = [
+        {
+            **bm,
+            "title": sanitize_for_prompt(str(bm.get("title", ""))),
+            "url": sanitize_for_prompt(str(bm.get("url", ""))),
+        }
+        for bm in snapshot_document.get("bookmarks", [])
+    ]
     compact_snapshot = {
         "created_at": snapshot_document.get("created_at"),
         "folders": snapshot_document.get("folders", []),
-        "bookmarks": snapshot_document.get("bookmarks", []),
+        "bookmarks": sanitized_bookmarks,
     }
     prompt = (
         "Given this bookmark snapshot and these guardrails, propose a draft semantic reorganization plan.\n"
@@ -822,6 +833,7 @@ def _semantic_response_schema() -> dict[str, Any]:
                         "from_path": {"type": "string"},
                         "to_path": {"type": "string"},
                         "target_path": {"type": "string"},
+                        "to_name": {"type": "string"},
                         "details": {
                             "type": "object",
                             "additionalProperties": False,
@@ -854,6 +866,7 @@ def _semantic_response_schema() -> dict[str, Any]:
                         "from_path",
                         "to_path",
                         "target_path",
+                        "to_name",
                         "details",
                     ],
                 },

@@ -363,6 +363,7 @@ class SemanticAction:
     from_path: str = ""
     to_path: str = ""
     target_path: str = ""
+    to_name: str = ""
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
