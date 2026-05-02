@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from bookmark_advisor.models import (
     BookmarkLocator,
@@ -469,6 +470,9 @@ def _normalize_openai_base_url(base_url: str | None) -> str | None:
         return None
 
     normalized = base_url.strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    if parsed.scheme != "https":
+        raise AIPlannerError("OpenAI base URL must use https://")
     for suffix in ("/responses", "/chat/completions", "/completions"):
         if normalized.endswith(suffix):
             normalized = normalized[: -len(suffix)]

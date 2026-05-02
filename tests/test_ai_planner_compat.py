@@ -89,6 +89,10 @@ class AIPlannerCompatTest(unittest.TestCase):
             "https://provider.example/api/v1",
         )
 
+    def test_normalize_openai_base_url_rejects_http(self):
+        with self.assertRaises(AIPlannerError):
+            _normalize_openai_base_url("http://api.example.com/v1")
+
     def test_plan_with_openai_falls_back_to_chat_completions(self):
         with TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
