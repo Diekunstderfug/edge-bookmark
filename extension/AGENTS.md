@@ -19,9 +19,13 @@ popup.html ── loads ── plan_lint.js, popup.js
 service_worker.js ── imports ── ai_planner.js (via importScripts)
 
 Message types (chrome.runtime.sendMessage):
-  generateAiPlan   → ai_planner.js generates plan via HTTPS
-  executePlan      → service_worker.js executes reviewed plan
-  exportSnapshot   → service_worker.js walks bookmark tree
+  start-background-job → starts generate/revise/execute jobs with the shared mutation lock
+  generate-ai-plan     → compatibility path for HTTPS planning; uses the same mutation lock
+  revise-ai-plan       → compatibility path for HTTPS plan revision; uses the same mutation lock
+  apply-reviewed-plan  → compatibility path for plan execution; uses the same mutation lock
+  export-snapshot      → service_worker.js walks bookmark tree
+  get-active-job       → returns persisted background job state
+  list-folders         → exports current folders for the popup scope picker
 ```
 
 ## CONVENTIONS
@@ -38,9 +42,13 @@ Message types (chrome.runtime.sendMessage):
 
 | Message | Direction | Payload |
 |---------|-----------|---------|
-| `generateAiPlan` | popup → SW | `{snapshot, options: {apiBaseUrl, apiKey, apiStyle, model, focusPath, maxActions}}` |
-| `executePlan` | popup → SW | `{plan}` (reviewed SemanticPlan) |
-| `exportSnapshot` | popup → SW | (none) |
+| `start-background-job` | popup → SW | `{job_type, payload}` for `generate-ai-plan`, `revise-ai-plan`, or `apply-reviewed-plan` |
+| `generate-ai-plan` | popup/compat → SW | `{options: {apiBaseUrl, apiKey, apiStyle, model, focusPath, maxActions}}` |
+| `revise-ai-plan` | popup/compat → SW | `{plan, options}` |
+| `apply-reviewed-plan` | popup/compat → SW | `{plan}` reviewed SemanticPlan |
+| `export-snapshot` | popup → SW | (none) |
+| `get-active-job` | popup → SW | (none) |
+| `list-folders` | popup → SW | (none) |
 
 ## ANTI-PATTERNS
 

@@ -192,7 +192,7 @@ The HTTPS planner path is intentionally SDK-free: the extension uses `fetch` aga
 
 The popup can save provider credentials locally. The API key is stored in `chrome.storage.local` as AES-GCM ciphertext, with the AES key derived automatically from the extension install using SHA-256. This avoids a separate unlock password, but it is convenience encryption rather than protection from someone who already controls the browser profile or extension storage.
 
-The popup also auto-saves in-progress form drafts because browser extension popups are destroyed when they lose focus. Provider URL, model, focus folder, max actions, selected tab, and the current API key draft are restored when the popup is reopened. API key drafts use the same AES-GCM storage path as saved keys.
+The popup also auto-saves in-progress form drafts because browser extension popups are destroyed when they lose focus. Provider URL, model, focus folder, max actions, and selected tab are restored when the popup is reopened. API keys are only persisted when explicitly saved.
 
 Fast extension planning uses bookmark titles, URLs, domains, and folder paths as evidence. For high-stakes semantic cleanup, the fuller CLI flow with URL review sidecars remains the stricter path.
 

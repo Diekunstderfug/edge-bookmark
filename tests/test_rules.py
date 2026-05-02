@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 
 from bookmark_advisor.rules import load_rules, validate_rules_file
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 class RulesTest(unittest.TestCase):
     def test_load_rules_parses_yaml_file(self):
@@ -68,10 +70,10 @@ class RulesTest(unittest.TestCase):
                 encoding="utf-8",
             )
             env = dict(os.environ)
-            env["PYTHONPATH"] = str(Path.cwd() / "src")
+            env["PYTHONPATH"] = str(_REPO_ROOT / "src")
             result = subprocess.run(
                 [sys.executable, "-m", "bookmark_advisor", "validate-rules", "--rules", str(rules_path)],
-                cwd=Path.cwd(),
+                cwd=_REPO_ROOT,
                 env=env,
                 capture_output=True,
                 text=True,
