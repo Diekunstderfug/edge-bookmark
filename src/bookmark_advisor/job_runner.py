@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import fcntl
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +27,7 @@ from bookmark_advisor.snapshot_io import (
 )
 from bookmark_advisor.utils import atomic_write_json
 
-PHASES = ("snapshot", "review", "enrich", "plan", "finalize", "apply", "done")
+PHASES = ("snapshot", "review", "enrich", "plan", "finalize", "apply", "waiting_for_extension_execution", "done")
 EXECUTION_BACKENDS = {"extension", "write_source"}
 
 
@@ -46,7 +48,7 @@ def init_reorg_job(
         _validate_backend(fallback_backend)
 
     if job_path is None:
-        job_dir = workspace / "data" / "jobs" / f"reorg_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        job_dir = workspace / "data" / "jobs" / f"reorg_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         manifest_path = job_dir / "reorg-job.json"
     else:
         manifest_path = job_path.expanduser().resolve()
@@ -124,9 +126,30 @@ def run_reorg_job(
     max_actions: int = 40,
     api_style: str | None = None,
     base_url: str | None = None,
+    allow_write_source: bool = False,
 ) -> dict[str, Any]:
     manifest_path = job_path.expanduser().resolve()
+    with _locked_manifest(manifest_path):
+        return _run_reorg_job_locked(
+            manifest_path=manifest_path,
+            model=model,
+            max_actions=max_actions,
+            api_style=api_style,
+            base_url=base_url,
+            allow_write_source=allow_write_source,
+        )
+
+
+def _run_reorg_job_locked(
+    manifest_path: Path,
+    model: str,
+    max_actions: int,
+    api_style: str | None,
+    base_url: str | None,
+    allow_write_source: bool,
+) -> dict[str, Any]:
     job = load_reorg_job(manifest_path)
+    _validate_job_artifact_paths(job, manifest_path)
     latest_message = ""
 
     while job.state.current_phase != "done":
@@ -141,6 +164,7 @@ def run_reorg_job(
                 completed_phase="snapshot",
                 next_phase="review",
                 last_artifact=job.review_queue_path,
+                manifest_path=manifest_path,
             )
             latest_message = "snapshot exported and review queue generated"
             continue
@@ -162,6 +186,7 @@ def run_reorg_job(
                 completed_phase="review",
                 next_phase="enrich",
                 last_artifact=job.url_review_path,
+                manifest_path=manifest_path,
             )
             latest_message = "url review file detected"
             continue
@@ -176,6 +201,7 @@ def run_reorg_job(
                 completed_phase="enrich",
                 next_phase="plan",
                 last_artifact=job.enriched_snapshot_path,
+                manifest_path=manifest_path,
             )
             latest_message = "enriched snapshot written"
             continue
@@ -199,6 +225,7 @@ def run_reorg_job(
                 completed_phase="plan",
                 next_phase="finalize",
                 last_artifact=job.draft_plan_path,
+                manifest_path=manifest_path,
             )
             latest_message = "draft semantic plan generated"
             continue
@@ -212,6 +239,7 @@ def run_reorg_job(
                 completed_phase="finalize",
                 next_phase="apply",
                 last_artifact=job.reviewed_plan_path,
+                manifest_path=manifest_path,
             )
             latest_message = "reviewed plan generated"
             continue
@@ -221,15 +249,22 @@ def run_reorg_job(
                 job = _advance_job(
                     job,
                     completed_phase="apply",
-                    next_phase="done",
+                    next_phase="waiting_for_extension_execution",
                     last_artifact=job.reviewed_plan_path,
+                    manifest_path=manifest_path,
                 )
-                latest_message = "reviewed plan ready for Edge extension import"
-                continue
+                return {
+                    "job_path": str(manifest_path),
+                    "current_phase": job.state.current_phase,
+                    "status": "waiting_for_extension_execution",
+                    "message": "Reviewed plan ready for Edge extension import; waiting for execution report.",
+                    "last_artifact": job.state.last_artifact,
+                    "primary_backend": job.execution.primary_backend,
+                }
 
             if job.execution.primary_backend == "write_source":
-                if not job.execution.allow_write_source:
-                    raise ValueError("write_source backend requires execution.allow_write_source=true")
+                if not job.execution.allow_write_source or not allow_write_source:
+                    raise ValueError("write_source backend requires both manifest and runtime allow_write_source=true")
                 create_backup(
                     Path(job.source_bookmarks_path),
                     Path(job.workspace) / "data" / "backups",
@@ -247,11 +282,23 @@ def run_reorg_job(
                     completed_phase="apply",
                     next_phase="done",
                     last_artifact=job.source_bookmarks_path,
+                    manifest_path=manifest_path,
                 )
                 latest_message = "reviewed plan applied to source bookmarks"
                 continue
 
             raise ValueError(f"Unsupported primary backend: {job.execution.primary_backend}")
+
+        if job.state.current_phase == "waiting_for_extension_execution":
+            write_reorg_job(job, manifest_path)
+            return {
+                "job_path": str(manifest_path),
+                "current_phase": job.state.current_phase,
+                "status": "waiting_for_extension_execution",
+                "message": "Reviewed plan ready for Edge extension import; waiting for execution report.",
+                "last_artifact": job.state.last_artifact,
+                "primary_backend": job.execution.primary_backend,
+            }
 
         raise ValueError(f"Unknown job phase: {job.state.current_phase}")
 
@@ -271,11 +318,12 @@ def _advance_job(
     completed_phase: str,
     next_phase: str,
     last_artifact: str,
+    manifest_path: Path | None = None,
 ) -> ReorgJob:
     completed_phases = list(job.state.completed_phases)
     if completed_phase not in completed_phases:
         completed_phases.append(completed_phase)
-    return replace(
+    advanced = replace(
         job,
         state=ReorgJobState(
             current_phase=next_phase,
@@ -283,6 +331,47 @@ def _advance_job(
             last_artifact=last_artifact,
         ),
     )
+    if manifest_path is not None:
+        write_reorg_job(advanced, manifest_path)
+    return advanced
+
+
+@contextmanager
+def _locked_manifest(manifest_path: Path):
+    lock_path = manifest_path.with_suffix(manifest_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"reorg job is already running: {manifest_path}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _validate_job_artifact_paths(job: ReorgJob, manifest_path: Path) -> None:
+    allowed_root = manifest_path.parent.resolve()
+    for value in (
+        job.snapshot_path,
+        job.review_queue_path,
+        job.url_review_path,
+        job.enriched_snapshot_path,
+        job.draft_plan_path,
+        job.reviewed_plan_path,
+    ):
+        path = Path(value).expanduser().resolve()
+        if not _is_relative_to(path, allowed_root):
+            raise ValueError(f"job artifact path must stay within the job directory: {path}")
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def _validate_backend(backend: str) -> None:

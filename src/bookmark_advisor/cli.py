@@ -116,6 +116,7 @@ def main() -> int:
     run_job_parser.add_argument("--model", default="gpt-4o-mini")
     run_job_parser.add_argument("--max-actions", type=int, default=40)
     run_job_parser.add_argument("--base-url")
+    run_job_parser.add_argument("--allow-write-source", action="store_true")
     run_job_parser.add_argument(
         "--api-style",
         choices=("auto", "responses", "chat_completions", "chat-completions"),
@@ -265,7 +266,7 @@ def main() -> int:
             snapshot_payload = load_snapshot_document(Path(args.snapshot).expanduser())
             review_payload = load_url_review_document(Path(args.reviews).expanduser())
             enriched_document = build_enriched_snapshot_document(snapshot_payload, review_payload)
-        except (FileNotFoundError, json.JSONDecodeError) as exc:
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         destination = (
@@ -350,8 +351,9 @@ def main() -> int:
                 max_actions=args.max_actions,
                 api_style=args.api_style,
                 base_url=args.base_url,
+                allow_write_source=args.allow_write_source,
             )
-        except (AIPlannerError, FileNotFoundError, json.JSONDecodeError, RulesValidationError, ValueError) as exc:
+        except (AIPlannerError, FileNotFoundError, json.JSONDecodeError, RulesValidationError, RuntimeError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         print(json.dumps(result, indent=2, ensure_ascii=False))
