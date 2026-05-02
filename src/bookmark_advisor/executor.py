@@ -40,13 +40,17 @@ def _apply_action(data: dict[str, Any], action: PlanAction) -> None:
         return
     if action.action_type == "move_folder":
         if not action.folder_id or not action.to_path:
-            return
-        destination_folder = _ensure_folder_path(data, action.to_path)
+            raise ValueError("move_folder requires folder_id and to_path")
         node, parent = _find_node_and_parent(data, action.folder_id)
         if not node or not parent:
-            return
+            raise ValueError(f"Could not resolve folder id: {action.folder_id}")
+        if action.from_path and (
+            action.to_path == action.from_path or action.to_path.startswith(f"{action.from_path}/")
+        ):
+            raise ValueError("move_folder destination must not be the source folder or its descendant")
+        destination_folder = _ensure_folder_path(data, action.to_path)
         if _contains_node(node, destination_folder):
-            return
+            raise ValueError("move_folder destination must not be the source folder or its descendant")
         parent["children"] = [child for child in parent.get("children", []) if str(child.get("id")) != action.folder_id]
         destination_folder.setdefault("children", []).append(node)
         return
@@ -55,11 +59,11 @@ def _apply_action(data: dict[str, Any], action: PlanAction) -> None:
         return
     if action.action_type == "move_bookmark":
         if not action.bookmark_id or not action.to_path:
-            return
-        destination_folder = _ensure_folder_path(data, action.to_path)
+            raise ValueError("move_bookmark requires bookmark_id and to_path")
         node, parent = _find_node_and_parent(data, action.bookmark_id)
         if not node or not parent:
-            return
+            raise ValueError(f"Could not resolve bookmark id: {action.bookmark_id}")
+        destination_folder = _ensure_folder_path(data, action.to_path)
         if any(child.get("id") == node.get("id") for child in destination_folder.get("children", [])):
             return
         parent["children"] = [child for child in parent.get("children", []) if str(child.get("id")) != action.bookmark_id]

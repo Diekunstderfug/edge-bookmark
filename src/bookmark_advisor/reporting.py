@@ -6,7 +6,7 @@ from bookmark_advisor.models import Plan
 from bookmark_advisor.parser import BookmarkSnapshot
 from bookmark_advisor.utils import atomic_write_json
 
-EXECUTABLE_ACTION_TYPES = {"create_folder", "move_folder", "move_bookmark", "remove_duplicate"}
+EXECUTABLE_ACTION_TYPES = {"create_folder", "rename_folder", "move_folder", "move_bookmark", "remove_duplicate"}
 
 
 def write_plan(plan: Plan, destination: Path) -> None:
