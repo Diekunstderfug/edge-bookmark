@@ -24,10 +24,15 @@ Write review artifacts under:
 {
   "review_version": "1",
   "created_at": "2026-04-22T10:00:00+08:00",
-  "source_snapshot": "data/snapshots/snapshot_20260422_095500.json",
+  "source_snapshot": "sha256:4b1d...",
   "items": []
 }
 ```
+
+`source_snapshot` must be copied exactly from the matching `review-queue.json`.
+It is a content identity for the snapshot, not a file path. The enrichment step
+rejects missing or non-matching values so stale review sidecars cannot be reused
+for a different bookmark snapshot.
 
 ## Per-item shape
 

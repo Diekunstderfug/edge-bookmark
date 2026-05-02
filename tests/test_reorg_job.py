@@ -141,10 +141,11 @@ class ReorgJobTest(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             snapshot_document = build_snapshot_document(load_snapshot(write_bookmarks_file(temp_path))).to_dict()
+            review_queue = build_review_queue_document(snapshot_document)
             review_document = {
                 "review_version": "1",
                 "created_at": "2026-04-22T10:00:00",
-                "source_snapshot": "snapshot.json",
+                "source_snapshot": review_queue.source_snapshot,
                 "items": [
                     {
                         "bookmark_id": "11",
@@ -189,7 +190,7 @@ class ReorgJobTest(unittest.TestCase):
             self.assertEqual(second["status"], "waiting_for_review")
             self.assertEqual(second["current_phase"], "review")
 
-    def test_run_job_completes_extension_backend_after_review(self):
+    def test_run_job_waits_for_extension_execution_after_review(self):
         with TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             source = write_bookmarks_file(temp_path)
@@ -202,12 +203,13 @@ class ReorgJobTest(unittest.TestCase):
             )
             run_reorg_job(job_path)
             job = load_reorg_job(job_path)
+            review_queue = json.loads(Path(job.review_queue_path).read_text(encoding="utf-8"))
             Path(job.url_review_path).write_text(
                 json.dumps(
                     {
                         "review_version": "1",
                         "created_at": "2026-04-22T10:00:00",
-                        "source_snapshot": job.snapshot_path,
+                        "source_snapshot": review_queue["source_snapshot"],
                         "items": [
                             {
                                 "bookmark_id": "11",
@@ -235,11 +237,14 @@ class ReorgJobTest(unittest.TestCase):
             )
             with patch("bookmark_advisor.job_runner.plan_with_openai", return_value=fake_draft_plan()):
                 result = run_reorg_job(job_path)
-            self.assertEqual(result["status"], "done")
+            self.assertEqual(result["status"], "waiting_for_extension_execution")
+            self.assertEqual(result["current_phase"], "waiting_for_extension_execution")
             self.assertEqual(result["primary_backend"], "extension")
             self.assertTrue(Path(job.reviewed_plan_path).exists())
             reviewed = json.loads(Path(job.reviewed_plan_path).read_text(encoding="utf-8"))
             self.assertEqual(reviewed["actions"][0]["status"], "approved")
+            completed = load_reorg_job(job_path).state.completed_phases
+            self.assertIn("apply", completed)
 
     def test_run_job_can_apply_write_source_backend(self):
         with TemporaryDirectory() as temp_dir:
@@ -255,12 +260,13 @@ class ReorgJobTest(unittest.TestCase):
             )
             run_reorg_job(job_path)
             job = load_reorg_job(job_path)
+            review_queue = json.loads(Path(job.review_queue_path).read_text(encoding="utf-8"))
             Path(job.url_review_path).write_text(
                 json.dumps(
                     {
                         "review_version": "1",
                         "created_at": "2026-04-22T10:00:00",
-                        "source_snapshot": job.snapshot_path,
+                        "source_snapshot": review_queue["source_snapshot"],
                         "items": [
                             {
                                 "bookmark_id": "11",
@@ -287,7 +293,7 @@ class ReorgJobTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with patch("bookmark_advisor.job_runner.plan_with_openai", return_value=fake_draft_plan()):
-                result = run_reorg_job(job_path)
+                result = run_reorg_job(job_path, allow_write_source=True)
             self.assertEqual(result["status"], "done")
             payload = json.loads(source.read_text(encoding="utf-8"))
             ai_folder = payload["roots"]["bookmark_bar"]["children"][0]
@@ -295,6 +301,130 @@ class ReorgJobTest(unittest.TestCase):
             self.assertIn("ChatGPT", ai_titles)
             backup_dir = temp_path / "data" / "backups"
             self.assertTrue(any(backup_dir.iterdir()))
+
+    def test_write_source_requires_runtime_allow_flag(self):
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source = write_bookmarks_file(temp_path)
+            rules = write_rules_file(temp_path)
+            _job, job_path = init_reorg_job(
+                workspace=temp_path,
+                source_bookmarks_path=source,
+                rules_path=rules,
+                primary_backend="write_source",
+                allow_write_source=True,
+            )
+            run_reorg_job(job_path)
+            job = load_reorg_job(job_path)
+            review_queue = json.loads(Path(job.review_queue_path).read_text(encoding="utf-8"))
+            Path(job.url_review_path).write_text(
+                json.dumps(
+                    {
+                        "review_version": "1",
+                        "created_at": "2026-04-22T10:00:00",
+                        "source_snapshot": review_queue["source_snapshot"],
+                        "items": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            with patch("bookmark_advisor.job_runner.plan_with_openai", return_value=fake_draft_plan()):
+                with self.assertRaisesRegex(ValueError, "runtime allow_write_source"):
+                    run_reorg_job(job_path)
+
+    def test_enriched_snapshot_rejects_stale_review_source(self):
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_document = build_snapshot_document(load_snapshot(write_bookmarks_file(temp_path))).to_dict()
+            review_document = {
+                "review_version": "1",
+                "created_at": "2026-04-22T10:00:00",
+                "source_snapshot": "other-snapshot.json",
+                "items": [],
+            }
+            with self.assertRaisesRegex(ValueError, "source_snapshot does not match"):
+                build_enriched_snapshot_document(snapshot_document, review_document)
+
+    def test_enriched_snapshot_requires_review_source_identity(self):
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_document = build_snapshot_document(load_snapshot(write_bookmarks_file(temp_path))).to_dict()
+            review_document = {
+                "review_version": "1",
+                "created_at": "2026-04-22T10:00:00",
+                "items": [],
+            }
+            with self.assertRaisesRegex(ValueError, "source_snapshot is required"):
+                build_enriched_snapshot_document(snapshot_document, review_document)
+
+    def test_enriched_snapshot_rejects_review_from_same_source_with_different_content(self):
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source = write_bookmarks_file(temp_path)
+            first_snapshot = build_snapshot_document(load_snapshot(source)).to_dict()
+            first_queue = build_review_queue_document(first_snapshot)
+
+            payload = json.loads(source.read_text(encoding="utf-8"))
+            payload["roots"]["bookmark_bar"]["children"].append(
+                {"type": "url", "id": "99", "name": "Later", "url": "https://later.example/"}
+            )
+            source.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            second_snapshot = build_snapshot_document(load_snapshot(source)).to_dict()
+
+            review_document = {
+                "review_version": "1",
+                "created_at": "2026-04-22T10:00:00",
+                "source_snapshot": first_queue.source_snapshot,
+                "items": [],
+            }
+            with self.assertRaisesRegex(ValueError, "source_snapshot does not match"):
+                build_enriched_snapshot_document(second_snapshot, review_document)
+
+    def test_job_manifest_artifact_paths_must_stay_in_job_directory(self):
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source = write_bookmarks_file(temp_path)
+            rules = write_rules_file(temp_path)
+            _job, job_path = init_reorg_job(
+                workspace=temp_path,
+                source_bookmarks_path=source,
+                rules_path=rules,
+                primary_backend="extension",
+            )
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            payload["workspace"] = "/"
+            payload["snapshot_path"] = str(temp_path / "outside-snapshot.json")
+            job_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "job artifact path must stay within the job directory"):
+                run_reorg_job(job_path)
+            self.assertFalse((temp_path / "outside-snapshot.json").exists())
+
+    def test_enriched_snapshot_ignores_review_with_stale_folder_path(self):
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_document = build_snapshot_document(load_snapshot(write_bookmarks_file(temp_path))).to_dict()
+            review_queue = build_review_queue_document(snapshot_document)
+            review_document = {
+                "review_version": "1",
+                "created_at": "2026-04-22T10:00:00",
+                "source_snapshot": review_queue.source_snapshot,
+                "items": [
+                    {
+                        "bookmark_id": "11",
+                        "url": "https://chatgpt.com/",
+                        "normalized_url": "https://chatgpt.com/",
+                        "folder_path": "/收藏夹栏/Old",
+                        "review_status": "reviewed",
+                        "review_method": "agent_web",
+                    }
+                ],
+            }
+            enriched = build_enriched_snapshot_document(snapshot_document, review_document)
+            bookmarks = {bookmark.id: bookmark for bookmark in enriched.bookmarks}
+            self.assertEqual(bookmarks["11"].review_status, "missing")
 
     def test_apply_reviewed_semantic_plan_preserves_folder_rename_target(self):
         with TemporaryDirectory() as temp_dir:

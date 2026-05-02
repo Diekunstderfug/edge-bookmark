@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import ipaddress
 from datetime import datetime
@@ -91,7 +92,7 @@ def build_review_queue_document(snapshot_document: dict) -> ReviewQueueDocument:
     return ReviewQueueDocument(
         queue_version="1",
         created_at=datetime.now().isoformat(timespec="seconds"),
-        source_snapshot=str(snapshot_document.get("source_path", "")),
+        source_snapshot=snapshot_identity(snapshot_document),
         items=items,
     )
 
@@ -116,12 +117,21 @@ def build_enriched_snapshot_document(
     snapshot_document: dict,
     review_document: dict,
 ) -> EnrichedSnapshotDocument:
+    snapshot_source = snapshot_identity(snapshot_document)
+    review_source = str(review_document.get("source_snapshot", ""))
+    if not review_source:
+        raise ValueError("URL review source_snapshot is required")
+    if review_source != snapshot_source:
+        raise ValueError(
+            f"URL review source_snapshot does not match snapshot identity: {review_source} != {snapshot_source}"
+        )
     review_index = _url_review_index(review_document)
     bookmarks = []
     for bookmark in snapshot_document.get("bookmarks", []):
         bookmark_id = str(bookmark.get("id", ""))
         normalized_url = str(bookmark.get("normalized_url") or bookmark.get("url") or "")
-        review_payload = review_index.get((bookmark_id, normalized_url), {})
+        folder_path = str(bookmark.get("folder_path", ""))
+        review_payload = review_index.get((bookmark_id, normalized_url, folder_path), {})
         default_review_status, default_review_method = _default_review_state(str(bookmark.get("url", "")))
         bookmarks.append(
             EnrichedSnapshotBookmarkRecord(
@@ -154,7 +164,7 @@ def build_enriched_snapshot_document(
         source=str(snapshot_document.get("source", "edge-file")),
         source_path=str(snapshot_document.get("source_path", "")),
         created_at=datetime.now().isoformat(timespec="seconds"),
-        source_snapshot=str(snapshot_document.get("source_path", "")),
+        source_snapshot=snapshot_source,
         review_source=str(review_document.get("source_snapshot", "")),
         folders=[
             SnapshotFolderRecord(
@@ -175,6 +185,17 @@ def build_enriched_snapshot_document(
 
 def write_enriched_snapshot_document(document: EnrichedSnapshotDocument, destination: Path) -> None:
     atomic_write_json(destination, document.to_dict())
+
+
+def snapshot_identity(snapshot_document: dict) -> str:
+    identity_payload = {
+        "source": str(snapshot_document.get("source", "")),
+        "source_path": str(snapshot_document.get("source_path", "")),
+        "folders": snapshot_document.get("folders", []),
+        "bookmarks": snapshot_document.get("bookmarks", []),
+    }
+    encoded = json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def url_requires_review(url: str) -> bool:
@@ -254,13 +275,14 @@ def _bookmark_diff_row(bookmark: dict) -> dict:
     }
 
 
-def _url_review_index(review_document: dict) -> dict[tuple[str, str], dict]:
-    index: dict[tuple[str, str], dict] = {}
+def _url_review_index(review_document: dict) -> dict[tuple[str, str, str], dict]:
+    index: dict[tuple[str, str, str], dict] = {}
     for item in review_document.get("items", []):
         bookmark_id = str(item.get("bookmark_id", ""))
         normalized_url = str(item.get("normalized_url") or item.get("url") or "")
-        if bookmark_id and normalized_url:
-            index[(bookmark_id, normalized_url)] = item
+        folder_path = str(item.get("folder_path", ""))
+        if bookmark_id and normalized_url and folder_path:
+            index[(bookmark_id, normalized_url, folder_path)] = item
     return index
 
 
