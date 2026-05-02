@@ -4,7 +4,8 @@
   const DEFAULT_API_STYLE = "auto";
   const DEFAULT_MAX_ACTIONS = 40;
   const DEFAULT_APPROVE_THRESHOLD = 0.85;
-  const DEFAULT_REQUEST_TIMEOUT_MS = 45000;
+  const MAX_EXTENSION_FETCH_TIMEOUT_MS = 300000;
+  const DEFAULT_REQUEST_TIMEOUT_MS = 120000;
   const MAX_ACTIVATION_LINT_ATTEMPTS = 3;
 
   const SUPPORTED_AI_ACTIONS = [
@@ -78,7 +79,7 @@
       options.autoApproveThreshold,
       DEFAULT_APPROVE_THRESHOLD,
     );
-    const requestTimeoutMs = positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
+    const requestTimeoutMs = requestTimeoutMsWithinMv3Lifetime(options.requestTimeoutMs);
     const focusPath = String(options.focusPath || "").trim();
     const userInstruction = String(options.userInstruction || "").trim();
     const onProgress = typeof options.onProgress === "function" ? options.onProgress : function () {};
@@ -134,7 +135,7 @@
       options.autoApproveThreshold,
       DEFAULT_APPROVE_THRESHOLD,
     );
-    const requestTimeoutMs = positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
+    const requestTimeoutMs = requestTimeoutMsWithinMv3Lifetime(options.requestTimeoutMs);
     const focusPath = String(options.focusPath || "").trim();
     const userInstruction = String(options.userInstruction || "").trim();
     if (!userInstruction) {
@@ -224,7 +225,7 @@
     for (let lintAttempt = 1; lintAttempt <= MAX_ACTIVATION_LINT_ATTEMPTS; lintAttempt++) {
       for (const attempt of buildRequestAttempts(apiStyle, apiBaseUrl)) {
         try {
-          onProgress(`Calling LLM endpoint (${attemptLabel(attempt)}) for ${progressLabel}, lint pass ${lintAttempt}/${MAX_ACTIVATION_LINT_ATTEMPTS}...`);
+          await onProgress(`Calling LLM endpoint (${attemptLabel(attempt)}) for ${progressLabel}, lint pass ${lintAttempt}/${MAX_ACTIVATION_LINT_ATTEMPTS}...`);
           const payload = await requestCompatibleAttempt({
             attempt,
             apiBaseUrl,
@@ -235,7 +236,7 @@
             systemText,
             userText: userText + retryFeedback,
           });
-          onProgress("Parsing and linting activation response...");
+          await onProgress("Parsing and linting activation response...");
           const activationPayload = parseDraftPlanText(extractAttemptText(attempt, payload));
           const lintErrors = lintActivationPayload(activationPayload, snapshot);
           if (lintErrors.length === 0) {
@@ -243,11 +244,11 @@
           }
           errors.push(`activation lint pass ${lintAttempt}: ${lintErrors.join("; ")}`);
           retryFeedback = buildActivationRetryFeedback(lintErrors);
-          onProgress(`Activation lint failed (${lintErrors.length} issue(s)). Retrying...`);
+          await onProgress(`Activation lint failed (${lintErrors.length} issue(s)). Retrying...`);
           break;
         } catch (error) {
           errors.push(`${attempt}: ${error.message || String(error)}`);
-          onProgress(`LLM attempt failed (${attemptLabel(attempt)}). Trying fallback...`);
+          await onProgress(`LLM attempt failed (${attemptLabel(attempt)}). Trying fallback...`);
         }
       }
     }
@@ -411,13 +412,12 @@
 
   function buildPlanningSnapshot(snapshot, focusPath) {
     const folders = (snapshot.folders || []).map(normalizeFolder);
-    const folderPaths = new Set(folders.map((folder) => folder.path));
     const bookmarks = (snapshot.bookmarks || [])
       .map(normalizeBookmark)
-      .filter((bookmark) => !focusPath || bookmark.folder_path.startsWith(focusPath))
+      .filter((bookmark) => !focusPath || pathInFocusScope(bookmark.folder_path, focusPath))
       .map((bookmark) => ({
         ...bookmark,
-        review_status: urlRequiresReview(bookmark.url) ? "reviewed" : "skipped_internal",
+        review_status: urlRequiresReview(bookmark.url) ? "fast_reviewed" : "skipped_internal",
         review_method: urlRequiresReview(bookmark.url)
           ? "extension_fast_title_domain"
           : "system_skip",
@@ -434,7 +434,7 @@
       source_path: snapshot.source_path || "edge-bookmarks-api",
       created_at: snapshot.created_at || new Date().toISOString(),
       focus_path: focusPath,
-      folders: folders.filter((folder) => !focusPath || folder.path.startsWith(focusPath) || folderPaths.has(folder.path)),
+      folders: folders.filter((folder) => !focusPath || pathInFocusScope(folder.path, focusPath) || focusPath.startsWith(`${folder.path}/`)),
       bookmarks,
     };
   }
@@ -477,7 +477,7 @@
       }
       return {
         ...action,
-        status: "proposed",
+        status: "blocked",
         details: {
           ...action.details,
           finalize_reason: "below-threshold",
@@ -535,6 +535,7 @@
 
     const bookmarkIndex = new Map((snapshot.bookmarks || []).map((bookmark) => [bookmark.id, bookmark]));
     const folderIndex = new Map((snapshot.folders || []).map((folder) => [folder.id, folder]));
+    const focusPath = String(snapshot.focus_path || "");
 
     activationPayload.activations.forEach((activation, index) => {
       const path = `activations[${index}]`;
@@ -560,30 +561,37 @@
       }
 
       if (op === "move_bookmark") {
+        const bookmark = bookmarkIndex.get(nodeId);
         if (nodeKind !== "bookmark") errors.push(`${path}.node_kind must be bookmark for move_bookmark.`);
-        if (!bookmarkIndex.has(nodeId)) errors.push(`${path}.node_id must reference an existing bookmark id.`);
+        if (!bookmark) errors.push(`${path}.node_id must reference an existing bookmark id.`);
+        if (bookmark && !pathInFocusScope(bookmark.folder_path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
         if (!isAbsolutePath(String(activation.destination_path || ""))) errors.push(`${path}.destination_path must be an absolute folder path.`);
       } else if (op === "move_folder") {
         const folder = folderIndex.get(nodeId);
         const destinationPath = String(activation.destination_path || "");
         if (nodeKind !== "folder") errors.push(`${path}.node_kind must be folder for move_folder.`);
         if (!folder) errors.push(`${path}.node_id must reference an existing folder id.`);
+        if (folder && !pathInFocusScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
         if (!isAbsolutePath(destinationPath)) errors.push(`${path}.destination_path must be an absolute folder path.`);
         if (folder && (destinationPath === folder.path || destinationPath.startsWith(`${folder.path}/`))) {
           errors.push(`${path}.destination_path must not be the same folder or its descendant.`);
         }
       } else if (op === "rename_folder") {
+        const folder = folderIndex.get(nodeId);
         if (nodeKind !== "folder") errors.push(`${path}.node_kind must be folder for rename_folder.`);
-        if (!folderIndex.has(nodeId)) errors.push(`${path}.node_id must reference an existing folder id.`);
+        if (!folder) errors.push(`${path}.node_id must reference an existing folder id.`);
+        if (folder && !pathInFocusScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
         if (!sanitizeForPrompt(activation.new_title || "")) errors.push(`${path}.new_title must be non-empty.`);
       } else if (op === "create_folder") {
         if (nodeKind !== "none") errors.push(`${path}.node_kind must be none for create_folder.`);
         if (!isAbsolutePath(String(activation.create_path || ""))) errors.push(`${path}.create_path must be an absolute folder path.`);
+        if (!pathInFocusScope(String(activation.create_path || ""), focusPath)) errors.push(`${path}.create_path must stay within the focused folder.`);
       } else if (op === "remove_duplicate") {
         const bookmark = bookmarkIndex.get(nodeId);
         const duplicateOf = bookmarkIndex.get(String(activation.duplicate_of_id || ""));
         if (nodeKind !== "bookmark") errors.push(`${path}.node_kind must be bookmark for remove_duplicate.`);
         if (!bookmark) errors.push(`${path}.node_id must reference an existing bookmark id.`);
+        if (bookmark && !pathInFocusScope(bookmark.folder_path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
         if (!duplicateOf) errors.push(`${path}.duplicate_of_id must reference an existing bookmark id.`);
         if (bookmark && duplicateOf && bookmark.normalized_url !== duplicateOf.normalized_url) {
           errors.push(`${path}.duplicate_of_id must point to a bookmark with the same normalized_url.`);
@@ -720,6 +728,11 @@
     return typeof path === "string" && path.startsWith("/") && path.length > 1;
   }
 
+  function pathInFocusScope(path, focusPath) {
+    if (!focusPath) return true;
+    return path === focusPath || path.startsWith(`${focusPath}/`);
+  }
+
   function applyActionGuardrails(action, bookmarkIndex) {
     if (action.action_type !== "move_bookmark") {
       return action;
@@ -766,10 +779,11 @@
   function forcedRuleActions(snapshot, folderIndex) {
     var rules = _cachedFastRules();
     var actions = [];
+    var focusPath = String(snapshot.focus_path || "");
     for (var i = 0; i < rules.folder_relocations.length; i++) {
       var rule = rules.folder_relocations[i];
       var folder = folderIndex.get(rule.from);
-      if (!folder) {
+      if (!folder || !pathInFocusScope(folder.path, focusPath)) {
         continue;
       }
       actions.push(normalizeAction({
@@ -796,7 +810,7 @@
     for (var j = 0; j < rules.bookmark_relocations.length; j++) {
       var bkRule = rules.bookmark_relocations[j];
       for (const bookmark of snapshot.bookmarks || []) {
-        if (!bookmarkMatchesRule(bookmark, bkRule)) {
+        if (!pathInFocusScope(bookmark.folder_path, focusPath) || !bookmarkMatchesRule(bookmark, bkRule)) {
           continue;
         }
         actions.push(normalizeAction({
@@ -854,7 +868,7 @@
       "Confidence reflects how sure you are the action is correct, not whether it needs human review. Only use keep_for_review when you want human review.",
       "When title and domain evidence is insufficient to determine a bookmark's purpose or category, use keep_for_review instead of guessing.",
       "In the reason field for uncertain items, note that web content inspection would help classify the bookmark accurately.",
-      "Only bookmarks with review_status=reviewed may be auto-classified; unresolved bookmarks must stay in keep_for_review.",
+      "Only bookmarks with review_status=reviewed may be auto-classified; extension fast_reviewed rows are allowed only when title/domain evidence is strong, otherwise keep_for_review.",
       "The browser extension will lint and post-process your output before execution.",
     ];
 
@@ -1271,6 +1285,13 @@
     return Number.isFinite(numberValue) ? numberValue : fallback;
   }
 
+  function requestTimeoutMsWithinMv3Lifetime(value) {
+    return Math.min(
+      positiveInteger(value, DEFAULT_REQUEST_TIMEOUT_MS),
+      MAX_EXTENSION_FETCH_TIMEOUT_MS,
+    );
+  }
+
   globalScope.BookmarkAdvisorAI = {
     generateReviewedPlan,
     reviseReviewedPlan,
@@ -1281,5 +1302,6 @@
     _activationResponseSchema: activationResponseSchema,
     _compileActivationPlan: compileActivationPlan,
     _lintActivationPayload: lintActivationPayload,
+    _requestTimeoutMsWithinMv3Lifetime: requestTimeoutMsWithinMv3Lifetime,
   };
 })(globalThis);

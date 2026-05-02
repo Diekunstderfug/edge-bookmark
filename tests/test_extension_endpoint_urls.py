@@ -27,6 +27,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             capture_output=True,
             text=True,
             cwd=_REPO_ROOT,
+            timeout=15,
         )
         return cast(object, json.loads(completed.stdout))
 
@@ -38,6 +39,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             capture_output=True,
             text=True,
             cwd=_REPO_ROOT,
+            timeout=15,
         )
         return cast(object, json.loads(completed.stdout))
 
@@ -69,6 +71,20 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         self.assertEqual(
             self._node_eval("BookmarkAdvisorAI._buildRequestAttempts('auto', 'https://api.example.com/v1/completions')"),
             ["completions_plain_json"],
+        )
+
+    def test_request_timeout_is_capped_for_mv3_service_worker_fetch_lifetime(self):
+        self.assertEqual(
+            self._node_eval("BookmarkAdvisorAI._requestTimeoutMsWithinMv3Lifetime(120000)"),
+            120000,
+        )
+        self.assertEqual(
+            self._node_eval("BookmarkAdvisorAI._requestTimeoutMsWithinMv3Lifetime(300000)"),
+            300000,
+        )
+        self.assertEqual(
+            self._node_eval("BookmarkAdvisorAI._requestTimeoutMsWithinMv3Lifetime(600000)"),
+            300000,
         )
 
     def test_revision_prompt_includes_existing_plan_and_instruction(self):
@@ -210,6 +226,86 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         error_text = "\n".join(cast(list[str], errors))
         self.assertIn("existing bookmark id", error_text)
 
+    def test_low_confidence_extension_actions_finalize_as_blocked(self):
+        body = """
+        global.fetch = async function (_url, _options) {
+          const payload = {
+            summary: { overview: 'low confidence' },
+            activations: [{
+              op: 'move_bookmark',
+              node_kind: 'bookmark',
+              node_id: '10',
+              destination_path: '/收藏夹栏/AI',
+              create_path: '',
+              new_title: '',
+              duplicate_of_id: '',
+              confidence: 0.2,
+              reason: 'maybe AI'
+            }]
+          };
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ choices: [{ text: JSON.stringify(payload) }] })
+          };
+        };
+        BookmarkAdvisorAI.generateReviewedPlan({
+          apiKey: 'test-key',
+          apiBaseUrl: 'https://api.example.com/v1/completions',
+          apiStyle: 'completions',
+          model: 'test-model',
+          snapshot: {
+            created_at: 'now',
+            folders: [],
+            bookmarks: [{
+              id: '10',
+              title: 'Example',
+              url: 'https://example.com',
+              normalized_url: 'https://example.com',
+              folder_path: '/收藏夹栏/Loose'
+            }]
+          }
+        }).then((result) => {
+          console.log(JSON.stringify({
+            status: result.reviewed_plan.actions[0].status,
+            blocked: result.reviewed_plan.summary.blocked_actions
+          }));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+        result = cast(dict[str, object], self._node_script(body))
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["blocked"], 1)
+
+    def test_activation_lint_rejects_focus_path_escape(self):
+        expression = """
+        BookmarkAdvisorAI._lintActivationPayload(
+          {
+            summary: { overview: 'outside focus' },
+            activations: [{
+              op: 'move_folder',
+              node_kind: 'folder',
+              node_id: '20',
+              destination_path: '/收藏夹栏/Inside/Target',
+              create_path: '',
+              new_title: '',
+              duplicate_of_id: '',
+              confidence: 0.92,
+              reason: 'move outside folder'
+            }]
+          },
+          {
+            focus_path: '/收藏夹栏/Inside',
+            folders: [{ id: '20', path: '/收藏夹栏/Outside', name: 'Outside' }],
+            bookmarks: []
+          }
+        )
+        """
+        errors = self._node_eval(expression)
+        error_text = "\n".join(cast(list[str], errors))
+        self.assertIn("focused folder", error_text)
+
     def test_generate_plan_retries_invalid_activation_with_lint_feedback(self):
         body = """
         const calls = [];
@@ -343,6 +439,48 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         self.assertEqual(result["callCount"], 3)
         self.assertEqual(result["feedbackIncludedOnLastTry"], True)
         self.assertIn("failed after 3 activation lint attempt", cast(str, result["message"]))
+
+    def test_focus_snapshot_does_not_include_prefix_sibling_folder_bookmarks(self):
+        body = """
+        let prompt = '';
+        global.fetch = async function (_url, options) {
+          const requestBody = JSON.parse(options.body);
+          prompt = requestBody.prompt;
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ choices: [{ text: JSON.stringify({ summary: { overview: 'none' }, activations: [] }) }] })
+          };
+        };
+        BookmarkAdvisorAI.generateReviewedPlan({
+          apiKey: 'test-key',
+          apiBaseUrl: 'https://api.example.com/v1/completions',
+          apiStyle: 'completions',
+          model: 'test-model',
+          focusPath: '/收藏夹栏/AI',
+          snapshot: {
+            created_at: 'now',
+            folders: [
+              { id: '1', name: '收藏夹栏', path: '/收藏夹栏' },
+              { id: '2', name: 'AI', path: '/收藏夹栏/AI' },
+              { id: '3', name: 'AIX', path: '/收藏夹栏/AIX' }
+            ],
+            bookmarks: [
+              { id: '10', title: 'Inside', url: 'https://inside.example', normalized_url: 'https://inside.example', folder_path: '/收藏夹栏/AI' },
+              { id: '11', title: 'Sibling', url: 'https://sibling.example', normalized_url: 'https://sibling.example', folder_path: '/收藏夹栏/AIX' }
+            ]
+          }
+        }).then(() => {
+          console.log(JSON.stringify({
+            hasInside: prompt.includes('Inside'),
+            hasSibling: prompt.includes('Sibling')
+          }));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        });
+        """
+        result = cast(dict[str, object], self._node_script(body))
+        self.assertEqual(result, {"hasInside": True, "hasSibling": False})
 
 
 if __name__ == "__main__":
