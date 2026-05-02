@@ -417,7 +417,8 @@
         <input id="api-key" type="password" autocomplete="off" placeholder="sk-..., sk-or-..., provider key">
 
         <label for="request-timeout" data-i18n="label_request_timeout">Request timeout (seconds)</label>
-        <input id="request-timeout" type="number" min="10" max="600" value="120">
+        <input id="request-timeout" type="number" min="10" max="300" value="120">
+        <p class="hint" data-i18n="hint_timeout_max">Max 300s — MV3 service worker lifecycle limit</p>
 
         <div class="button-row">
           <button id="save-credentials-btn" class="secondary" type="button" data-i18n="btn_save">Save Credentials</button>

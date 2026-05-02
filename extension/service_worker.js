@@ -8,7 +8,7 @@ const EXECUTION_ORDER = [
   "move_bookmark",
   "remove_duplicate",
 ];
-const EXECUTABLE_STATUSES = new Set(["approved", "edited", "proposed"]);
+const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
 const ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
 let runningJobId = "";
 
@@ -18,7 +18,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "apply-reviewed-plan") {
-    executeReviewedPlan(message.plan, reportProgress)
+    runDirectMutatingOperation("apply-reviewed-plan", () => executeReviewedPlan(message.plan, reportProgress))
       .then((result) => sendResponse(result))
       .catch((error) => {
         reportProgress(`Execution failed: ${error.message || String(error)}`);
@@ -41,7 +41,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "generate-ai-plan") {
-    generateAiReviewedPlan(message.options || {}, reportProgress)
+    runDirectMutatingOperation("generate-ai-plan", () => generateAiReviewedPlan(message.options || {}, reportProgress))
       .then((result) => sendResponse(result))
       .catch((error) => {
         reportProgress(`AI planning failed: ${error.message || String(error)}`);
@@ -51,7 +51,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "revise-ai-plan") {
-    reviseAiReviewedPlan(message.plan, message.options || {}, reportProgress)
+    runDirectMutatingOperation("revise-ai-plan", () => reviseAiReviewedPlan(message.plan, message.options || {}, reportProgress))
       .then((result) => sendResponse(result))
       .catch((error) => {
         reportProgress(`AI plan revision failed: ${error.message || String(error)}`);
@@ -88,12 +88,28 @@ async function startBackgroundJob(jobType, payload) {
   if (!["generate-ai-plan", "revise-ai-plan", "apply-reviewed-plan"].includes(jobType)) {
     return { error: `Unsupported background job type: ${jobType}` };
   }
-  const existingJob = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  if (runningJobId) {
+    return { error: "Background job already running in this service worker." };
+  }
+  runningJobId = "starting";
+  let existingJob;
+  try {
+    existingJob = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  } catch (error) {
+    runningJobId = "";
+    throw error;
+  }
   if (isFreshRunningJob(existingJob)) {
+    runningJobId = "";
     return { error: `Background job already running: ${existingJob.type}` };
   }
   if (isStaleRunningJob(existingJob)) {
-    await failJob(existingJob, "Background job timed out before completion.");
+    try {
+      await failJob(existingJob, "Background job timed out before completion.");
+    } catch (error) {
+      runningJobId = "";
+      throw error;
+    }
   }
   const job = {
     id: `job-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -108,6 +124,24 @@ async function startBackgroundJob(jobType, payload) {
     void failJob(job, error.message || String(error));
   });
   return { job };
+}
+
+async function runDirectMutatingOperation(jobType, callback) {
+  if (runningJobId) {
+    throw new Error(`Background job already running: ${jobType}`);
+  }
+  runningJobId = `direct-${jobType}-${Date.now()}`;
+  try {
+    const existingJob = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+    if (isFreshRunningJob(existingJob)) {
+      throw new Error(`Background job already running: ${existingJob.type}`);
+    }
+    return await callback();
+  } finally {
+    if (runningJobId.startsWith(`direct-${jobType}-`)) {
+      runningJobId = "";
+    }
+  }
 }
 
 async function getActiveJobForPopup() {
@@ -416,6 +450,10 @@ async function moveFolder(action) {
   if (!folderId) {
     throw new Error("Could not resolve folder by locator");
   }
+  const fromPath = expectedFolderPath(action);
+  if (fromPath && (action.to_path === fromPath || action.to_path.startsWith(`${fromPath}/`))) {
+    throw new Error("move_folder destination must not be the source folder or its descendant");
+  }
   const destinationFolderId = await ensureFolderPath(action.to_path);
   await bookmarkCall("move", folderId, { parentId: destinationFolderId });
 }
@@ -441,13 +479,17 @@ async function resolveFolderId(action) {
   const locator = action.folder_locator || {};
   const candidateId = locator.id || action.folder_id || "";
   if (candidateId) {
+    let nodes = null;
     try {
-      const nodes = await bookmarkCall("get", candidateId);
-      if (nodes && nodes[0] && !nodes[0].url) {
+      nodes = await bookmarkCall("get", candidateId);
+    } catch (_error) {
+      nodes = null;
+    }
+    if (nodes && nodes[0]) {
+      if (!nodes[0].url && await folderNodeMatchesLocator(nodes[0], action)) {
         return candidateId;
       }
-    } catch (_error) {
-      // fall through to path matching
+      throw new Error("Folder locator id did not match the current folder metadata");
     }
   }
 
@@ -463,13 +505,17 @@ async function resolveBookmarkId(action) {
   const locator = action.bookmark_locator || {};
   const candidateId = locator.id || action.bookmark_id || "";
   if (candidateId) {
+    let nodes = null;
     try {
-      const nodes = await bookmarkCall("get", candidateId);
-      if (nodes && nodes[0] && nodes[0].url) {
+      nodes = await bookmarkCall("get", candidateId);
+    } catch (_error) {
+      nodes = null;
+    }
+    if (nodes && nodes[0]) {
+      if (nodes[0].url && await bookmarkNodeMatchesLocator(nodes[0], action)) {
         return candidateId;
       }
-    } catch (_error) {
-      // fall through to locator matching
+      throw new Error("Bookmark locator id did not match the current bookmark metadata");
     }
   }
 
@@ -498,6 +544,42 @@ async function resolveBookmarkId(action) {
     }
   }
   return "";
+}
+
+async function bookmarkNodeMatchesLocator(node, action) {
+  const locator = action.bookmark_locator || {};
+  if (locator.title && node.title !== locator.title) {
+    return false;
+  }
+  if (locator.url && node.url !== locator.url) {
+    return false;
+  }
+  if (locator.normalized_url && normalizeUrl(node.url || "") !== locator.normalized_url) {
+    return false;
+  }
+  if (locator.folder_path && await nodeParentPath(node.parentId) !== locator.folder_path) {
+    return false;
+  }
+  return true;
+}
+
+async function folderNodeMatchesLocator(node, action) {
+  const locator = action.folder_locator || {};
+  if (locator.name && node.title !== locator.name) {
+    return false;
+  }
+  const expectedPath = expectedFolderPath(action);
+  if (expectedPath) {
+    const parentPath = await nodeParentPath(node.parentId);
+    const actualPath = `${parentPath}/${node.title || ""}`.replace(/\/+/g, "/");
+    return actualPath === expectedPath;
+  }
+  return true;
+}
+
+function expectedFolderPath(action) {
+  const locator = action.folder_locator || {};
+  return locator.path || action.from_path || "";
 }
 
 async function nodeParentPath(parentId) {
@@ -535,6 +617,12 @@ async function ensureFolderPath(folderPath) {
     let next = (current.children || []).find(
       (node) => !node.url && node.title === part,
     );
+    if (!next) {
+      const refreshedChildren = await bookmarkCall("getChildren", current.id);
+      next = (refreshedChildren || []).find(
+        (node) => !node.url && node.title === part,
+      );
+    }
     if (!next) {
       next = await bookmarkCall("create", {
         parentId: current.id,
