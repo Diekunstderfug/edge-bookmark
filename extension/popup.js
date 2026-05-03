@@ -1223,6 +1223,18 @@ function buildActionItem(action) {
   }
 
   if (needsReview && action.status === "proposed" && type !== "keep_for_review") {
+    const quickApproveBtn = document.createElement("button");
+    quickApproveBtn.className = "action-quick-approve";
+    quickApproveBtn.textContent = "✓";
+    quickApproveBtn.title = t("btn_action_approve");
+    quickApproveBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      action.status = "approved";
+      saveLastPlan(loadedPlan);
+      loadPlan(loadedPlan);
+    });
+    item.appendChild(quickApproveBtn);
+
     const actionsRow = document.createElement("div");
     actionsRow.className = "action-actions";
     const approveBtn = document.createElement("button");
