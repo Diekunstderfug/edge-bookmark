@@ -300,6 +300,7 @@ let restoringInputs = false;
 let cacheWriteInFlight = false;
 let cacheWriteQueued = false;
 let activeBackgroundJob = null;
+let _pendingFocusPath = "";
 
 function showSpinner() { spinnerEl.hidden = false; }
 function hideSpinner() { spinnerEl.hidden = true; }
@@ -885,7 +886,7 @@ async function loadFolderList() {
 }
 
 function populateFolderDropdown(folders) {
-  const current = focusPathInput.value;
+  const current = focusPathInput.value || _pendingFocusPath;
   focusPathInput.innerHTML = "";
   const allOption = document.createElement("option");
   allOption.value = "";
@@ -906,6 +907,7 @@ function populateFolderDropdown(folders) {
   }
   if (current) {
     focusPathInput.value = current;
+    _pendingFocusPath = "";
   }
 }
 
@@ -1517,7 +1519,7 @@ function applyUiDraft(draft) {
     modelInput.value = draft.model;
   }
   requestTimeoutInput.value = draft.requestTimeout || DEFAULT_LLM_SETTINGS.requestTimeout;
-  focusPathInput.value = draft.focusPath || DEFAULT_UI_DRAFT.focusPath;
+  _pendingFocusPath = draft.focusPath || DEFAULT_UI_DRAFT.focusPath;
   maxActionsInput.value = draft.maxActions || DEFAULT_UI_DRAFT.maxActions;
   if (draft.userInstruction) {
     userInstructionInput.value = draft.userInstruction;

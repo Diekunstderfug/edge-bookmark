@@ -29,7 +29,7 @@
 
       .panel {
         background: #ffffff;
-        border: 1px solid #d7e1e8;
+        border: 1px solid #e4edf0;
         border-radius: 12px;
         padding: 12px;
         margin-bottom: 12px;
@@ -132,11 +132,6 @@
         margin-top: 10px;
       }
 
-      .button-row button {
-        font-size: 12px;
-        padding: 8px;
-      }
-
       button.secondary {
         background: #2f4f5f;
       }
@@ -176,7 +171,7 @@
 
       .category-group {
         margin-bottom: 6px;
-        border: 1px solid #d7e1e8;
+        border: 1px solid #e4edf0;
         border-radius: 10px;
         overflow: hidden;
       }
@@ -246,7 +241,7 @@
 
       .action-item {
         padding: 6px 0;
-        border-bottom: 1px solid #e8f0f2;
+        border-bottom: 1px solid #edf3f5;
       }
 
       .action-item:last-child {
@@ -430,9 +425,10 @@
         <div id="preview-list"></div>
       </div>
 
-      <button id="revise-ai-btn" class="revise" type="button" disabled data-i18n="btn_revise">Revise Loaded Plan</button>
-      <div style="height: 8px;"></div>
-      <button id="execute-btn" disabled data-i18n="btn_execute">Execute Reviewed Plan</button>
+      <div class="button-row">
+        <button id="revise-ai-btn" class="revise" type="button" disabled data-i18n="btn_revise">Revise Loaded Plan</button>
+        <button id="execute-btn" disabled data-i18n="btn_execute">Execute Reviewed Plan</button>
+      </div>
       <div style="height: 8px;"></div>
       <button id="undo-btn" class="danger" type="button" disabled data-i18n="btn_undo">Undo Last Execution</button>
       <div style="height: 8px;"></div>
