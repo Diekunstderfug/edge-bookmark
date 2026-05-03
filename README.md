@@ -183,16 +183,25 @@ Use it like this:
 3. Load the `extension/` directory as an unpacked extension
 4. Open the `LLM Settings` tab and configure an HTTPS OpenAI-compatible base URL, model, endpoint mode, and API key
 5. Return to the `Plan` tab and click `Generate AI Plan`, or import a reviewed plan JSON file
-6. Review the preflight summary
+6. Review the preflight summary — each proposed action shows an approve button and a revise note field
 7. Execute the reviewed plan inside Edge
-8. Optionally export the current snapshot from the extension
-9. Optionally download the execution report JSON
+8. After execution, optionally undo the last batch, or click "Generate New Plan for Remaining" to continue with unreviewed items
+9. Optionally export the current snapshot from the extension
+10. Optionally download the execution report JSON
 
 The HTTPS planner path is intentionally SDK-free: the extension uses `fetch` against OpenAI-compatible REST APIs. In `auto` mode it tries Responses API JSON schema first, then Chat Completions JSON schema, then Chat Completions JSON object/plain JSON fallbacks for compatible providers that do not support Structured Outputs.
 
 The popup can save provider credentials locally. The API key is stored in `chrome.storage.local` as AES-GCM ciphertext, with the AES key derived automatically from the extension install using SHA-256. This avoids a separate unlock password, but it is convenience encryption rather than protection from someone who already controls the browser profile or extension storage.
 
-The popup also auto-saves in-progress form drafts because browser extension popups are destroyed when they lose focus. Provider URL, model, focus folder, max actions, and selected tab are restored when the popup is reopened. API keys are only persisted when explicitly saved.
+The popup also auto-saves in-progress form drafts because browser extension popups are destroyed when they lose focus. Provider URL, model, focus folder, max actions, max retries, and selected tab are restored when the popup is reopened. API keys are only persisted when explicitly saved.
+
+The extension has several safety features:
+
+- **Undo log**: Every execution records pre-mutation state so you can reverse the last batch with one click
+- **Quarantine folder**: Duplicate bookmarks are moved to `_Quarantine` instead of being permanently deleted
+- **Policy engine**: When a focus folder is set, the execution engine blocks any action that would escape that scope
+- **Per-action review**: Each proposed action has its own approve button and revise note, independent of category grouping
+- **Max retries**: Controls how many times the AI planner retries after a lint failure (default 1, range 0-3)
 
 Fast extension planning uses bookmark titles, URLs, domains, and folder paths as evidence. For high-stakes semantic cleanup, the fuller CLI flow with URL review sidecars remains the stricter path.
 
@@ -200,6 +209,7 @@ The popup now performs two validation layers before execution:
 
 - JSON syntax validation in-browser when the file is loaded
 - plan-shape linting for required fields, unsupported action types, and missing locator data
+- focus-path policy enforcement at execution time to prevent out-of-scope mutations
 
 If you only want a quick syntax check from Python, the standard library already has one:
 
@@ -212,3 +222,7 @@ That built-in check is useful for raw JSON syntax only. It does not know the Boo
 ## Fallback mode
 
 `--apply --write-source` is still available as a debugging or recovery path, but it is not the recommended workflow because direct file edits can be overwritten by Edge sync.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a history of changes.

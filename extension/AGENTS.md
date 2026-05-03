@@ -6,9 +6,10 @@ Edge MV3 browser extension — plan execution and in-browser AI planning. Vanill
 
 | Task | File | Notes |
 |------|------|-------|
-| Extension UI | `popup.html` + `popup.js` | Two tabs: Plan + LLM Settings. Auto-saves drafts. |
-| Background ops | `service_worker.js` | chrome.bookmarks API, plan execution, snapshot export |
-| In-browser AI | `ai_planner.js` | HTTPS fetch against OpenAI-compatible APIs (SDK-free) |
+| Extension UI | `popup.html` + `popup.js` | Two tabs: Plan + LLM Settings. Per-action approve/revise. Auto-saves drafts. |
+| Background ops | `service_worker.js` | chrome.bookmarks API, plan execution, undo log, policy engine, quarantine |
+| In-browser AI | `ai_planner.js` | HTTPS fetch against OpenAI-compatible APIs (SDK-free), pipe-delimited encoding |
+| Shared helpers | `storage_helpers.js` | Storage constants, chrome.storage wrappers, `pathWithinScope` |
 | Plan validation | `plan_lint.js` | JSON syntax + plan-shape linting before execution |
 | Extension config | `manifest.json` | MV3, permissions: `bookmarks`, `storage`, host: `https://*/*` |
 
@@ -16,13 +17,15 @@ Edge MV3 browser extension — plan execution and in-browser AI planning. Vanill
 
 ```
 popup.html ── loads ── plan_lint.js, popup.js
-service_worker.js ── imports ── ai_planner.js (via importScripts)
+service_worker.js ── imports ── ai_planner.js, storage_helpers.js (via importScripts)
 
 Message types (chrome.runtime.sendMessage):
   start-background-job → starts generate/revise/execute jobs with the shared mutation lock
   generate-ai-plan     → compatibility path for HTTPS planning; uses the same mutation lock
   revise-ai-plan       → compatibility path for HTTPS plan revision; uses the same mutation lock
   apply-reviewed-plan  → compatibility path for plan execution; uses the same mutation lock
+  undo-last-execution  → reverses the most recent execution from the undo log
+  cancel-active-job    → force-stops a running background job and clears storage
   export-snapshot      → service_worker.js walks bookmark tree
   get-active-job       → returns persisted background job state
   list-folders         → exports current folders for the popup scope picker
@@ -35,6 +38,13 @@ Message types (chrome.runtime.sendMessage):
 - **AI planner is SDK-free**: Uses raw `fetch()` with auto-fallback chain (Responses API → Chat Completions JSON schema → JSON object mode)
 - **IIFE module pattern**: `ai_planner.js` and `plan_lint.js` use `(function attach*(globalScope) {...})(self)` — attach to `self` in service worker context
 - **Execution order**: `rename_folder → create_folder → move_folder → move_bookmark → remove_duplicate`
+- **Undo log**: Every mutation records pre-state (parentId, title) to `bookmarkAdvisorUndoLog` in chrome.storage. `undo-last-execution` reverses the most recent batch. Log auto-trims to 20 execution IDs.
+- **Quarantine**: `remove_duplicate` moves bookmarks to `/收藏夹栏/_Quarantine` instead of permanently deleting them. This allows undo and manual review.
+- **Policy engine**: `checkActionPolicy` enforces focus-path scope at execution time. Actions outside the focused folder are blocked with a descriptive reason.
+- **Per-action status**: `actionDisplayStatus()` classifies each action as `executable`/`pending`/`blocked`/`review` based on its own status, not the category group. This drives the orange label and approve button independently.
+- **Pipe-delimited encoding**: `encodeSnapshot()`/`encodePlan()` use pipe-separated values instead of JSON to reduce LLM token consumption in prompts.
+- **Unified target field**: The AI activation schema uses a single `target` field (destination path, new title, or create path) instead of separate `destination_path`/`create_path`/`new_title`.
+- **Undo type constants**: `UNDO_MOVE`, `UNDO_RENAME`, `UNDO_DELETE_FOLDER` replace stringly-typed undo action types.
 - **API key storage**: AES-GCM ciphertext in `chrome.storage.local`, key derived from extension install ID (SHA-256)
 - **Popup auto-save**: Form state persisted to `chrome.storage.local` because popups are destroyed on focus loss
 
@@ -43,9 +53,11 @@ Message types (chrome.runtime.sendMessage):
 | Message | Direction | Payload |
 |---------|-----------|---------|
 | `start-background-job` | popup → SW | `{job_type, payload}` for `generate-ai-plan`, `revise-ai-plan`, or `apply-reviewed-plan` |
-| `generate-ai-plan` | popup/compat → SW | `{options: {apiBaseUrl, apiKey, apiStyle, model, focusPath, maxActions}}` |
+| `generate-ai-plan` | popup/compat → SW | `{options: {apiBaseUrl, apiKey, apiStyle, model, focusPath, maxActions, maxRetries}}` |
 | `revise-ai-plan` | popup/compat → SW | `{plan, options}` |
-| `apply-reviewed-plan` | popup/compat → SW | `{plan}` reviewed SemanticPlan |
+| `apply-reviewed-plan` | popup/compat → SW | `{plan, focusPath}` reviewed SemanticPlan |
+| `undo-last-execution` | popup → SW | (none) — reverses most recent execution batch |
+| `cancel-active-job` | popup → SW | (none) — force-stops running job and clears storage |
 | `export-snapshot` | popup → SW | (none) |
 | `get-active-job` | popup → SW | (none) |
 | `list-folders` | popup → SW | (none) |
