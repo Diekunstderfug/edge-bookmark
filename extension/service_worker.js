@@ -10,6 +10,10 @@ const EXECUTION_ORDER = [
 ];
 const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
 const ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
+const QUARANTINE_FOLDER_PATH = "/收藏夹栏/_Quarantine";
+const UNDO_MOVE = "move";
+const UNDO_RENAME = "rename";
+const UNDO_DELETE_FOLDER = "delete_folder";
 let runningJobId = "";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -18,7 +22,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "apply-reviewed-plan") {
-    runDirectMutatingOperation("apply-reviewed-plan", () => executeReviewedPlan(message.plan, reportProgress))
+    runDirectMutatingOperation("apply-reviewed-plan", () => executeReviewedPlan(message.plan, message.focusPath || "", reportProgress))
       .then((result) => sendResponse(result))
       .catch((error) => {
         reportProgress(`Execution failed: ${error.message || String(error)}`);
@@ -77,6 +81,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "list-folders") {
     listFolders()
       .then((folders) => sendResponse({ folders }))
+      .catch((error) => sendResponse({ error: error.message || String(error) }));
+    return true;
+  }
+
+  if (message.type === "undo-last-execution") {
+    undoLastExecution()
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ error: error.message || String(error) }));
+    return true;
+  }
+
+  if (message.type === "cancel-active-job") {
+    cancelActiveJob()
+      .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ error: error.message || String(error) }));
     return true;
   }
@@ -166,6 +184,11 @@ function isStaleRunningJob(job) {
 }
 
 async function failJob(job, message) {
+  const current = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  if (current && current.id === job.id && current.status !== "running") {
+    if (runningJobId === job.id) { runningJobId = ""; }
+    return current;
+  }
   const failed = {
     ...job,
     status: "failed",
@@ -181,6 +204,15 @@ async function failJob(job, message) {
   return failed;
 }
 
+async function cancelActiveJob() {
+  runningJobId = "";
+  await Promise.all([
+    chromeStorageSet(ACTIVE_JOB_STORAGE_NAME, null).catch(() => {}),
+    chromeStorageSet("bookmarkAdvisorProgress", null).catch(() => {}),
+  ]);
+  return { cancelled: true };
+}
+
 async function runBackgroundJob(job, payload) {
   const onProgress = (message) => jobProgress(job, message);
   if (job.type === "generate-ai-plan") {
@@ -194,12 +226,17 @@ async function runBackgroundJob(job, payload) {
     return;
   }
   if (job.type === "apply-reviewed-plan") {
-    const result = await executeReviewedPlan(payload.plan, onProgress);
+    const result = await executeReviewedPlan(payload.plan, payload.focusPath || "", onProgress);
     await finishJob(job, result, "Execution complete.");
   }
 }
 
 async function finishJob(job, result, progress) {
+  const current = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  if (current && current.id === job.id && current.status !== "running") {
+    if (runningJobId === job.id) { runningJobId = ""; }
+    return;
+  }
   await saveActiveJob({
     ...job,
     status: "succeeded",
@@ -218,16 +255,21 @@ function saveActiveJob(job) {
 }
 
 function jobProgress(job, message) {
-  const updated = {
-    ...job,
-    status: "running",
-    progress: message,
-    updated_at: new Date().toISOString(),
-  };
-  return Promise.all([
-    saveActiveJob(updated),
-    chromeStorageSet("bookmarkAdvisorProgress", { message, updated_at: Date.now() }),
-  ]);
+  return chromeStorageGet(ACTIVE_JOB_STORAGE_NAME).then((current) => {
+    if (!current || current.id !== job.id || current.status !== "running") {
+      return;
+    }
+    const updated = {
+      ...job,
+      status: "running",
+      progress: message,
+      updated_at: new Date().toISOString(),
+    };
+    return Promise.all([
+      saveActiveJob(updated),
+      chromeStorageSet("bookmarkAdvisorProgress", { message, updated_at: Date.now() }),
+    ]);
+  });
 }
 
 async function generateAiReviewedPlan(options, onProgress = reportProgress) {
@@ -262,9 +304,10 @@ async function reviseAiReviewedPlan(plan, options, onProgress = reportProgress) 
   return result;
 }
 
-async function executeReviewedPlan(plan, onProgress = reportProgress) {
+async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress) {
   validateExecutablePlan(plan);
 
+  const executionId = `exec-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const grouped = new Map(EXECUTION_ORDER.map((actionType) => [actionType, []]));
   for (const action of plan.actions) {
     if (
@@ -288,10 +331,11 @@ async function executeReviewedPlan(plan, onProgress = reportProgress) {
   for (const actionType of EXECUTION_ORDER) {
     for (const action of grouped.get(actionType)) {
       try {
-        await applyAction(action);
+        await applyAction(action, focusPath, executionId);
         succeeded.push({
           actionId: action.action_id || "",
           actionType,
+          target: action.to_path || action.target_path || locatorLabel(action),
           result: "succeeded",
           executed_at: executedAt,
         });
@@ -403,76 +447,201 @@ function validateExecutablePlan(plan) {
   }
 }
 
-async function applyAction(action) {
+function checkActionPolicy(action, focusPath) {
+  if (!focusPath) {
+    return { allowed: true };
+  }
+  const type = action.action_type;
+
+  switch (type) {
+    case "create_folder": {
+      const targetPath = action.target_path || "";
+      if (!pathWithinScope(targetPath, focusPath)) {
+        return { allowed: false, reason: `create_folder target ${targetPath} is outside focus scope ${focusPath}` };
+      }
+      return { allowed: true };
+    }
+    case "move_bookmark":
+    case "move_folder": {
+      const fromPath = action.from_path || "";
+      const toPath = action.to_path || "";
+      if (!pathWithinScope(fromPath, focusPath)) {
+        return { allowed: false, reason: `${type} source ${fromPath} is outside focus scope ${focusPath}` };
+      }
+      if (!pathWithinScope(toPath, focusPath)) {
+        return { allowed: false, reason: `${type} destination ${toPath} is outside focus scope ${focusPath}` };
+      }
+      return { allowed: true };
+    }
+    case "rename_folder": {
+      const fromPath = action.from_path || "";
+      if (!pathWithinScope(fromPath, focusPath)) {
+        return { allowed: false, reason: `rename_folder path ${fromPath} is outside focus scope ${focusPath}` };
+      }
+      return { allowed: true };
+    }
+    case "remove_duplicate":
+      return { allowed: true };
+    default:
+      return { allowed: false, reason: `Unknown action_type: ${type}` };
+  }
+}
+
+async function recordUndo(executionId, action, before, undoType) {
+  const entry = {
+    undo_id: `undo-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    execution_id: executionId,
+    action_id: action.action_id || "",
+    action_type: action.action_type,
+    before,
+    undo_action: undoType === UNDO_DELETE_FOLDER
+      ? { type: UNDO_DELETE_FOLDER, id: before.id }
+      : undoType === UNDO_RENAME
+        ? { type: UNDO_RENAME, id: before.id, title: before.title }
+        : { type: UNDO_MOVE, id: before.id, parentId: before.parentId },
+    timestamp: new Date().toISOString(),
+  };
+  const log = (await chromeStorageGet(UNDO_LOG_STORAGE_NAME)) || [];
+  log.push(entry);
+  const execIds = [...new Set(log.map((e) => e.execution_id))];
+  if (execIds.length > 20) {
+    const staleIds = new Set(execIds.slice(0, execIds.length - 20));
+    const trimmed = log.filter((e) => !staleIds.has(e.execution_id));
+    await chromeStorageSet(UNDO_LOG_STORAGE_NAME, trimmed);
+  } else {
+    await chromeStorageSet(UNDO_LOG_STORAGE_NAME, log);
+  }
+}
+
+async function undoLastExecution() {
+  const log = (await chromeStorageGet(UNDO_LOG_STORAGE_NAME)) || [];
+  if (log.length === 0) {
+    return { undone: false, reason: "No undo log entries found." };
+  }
+
+  const lastExecutionId = log[log.length - 1].execution_id;
+  const entries = [];
+  const remaining = [];
+  for (const e of log) {
+    (e.execution_id === lastExecutionId ? entries : remaining).push(e);
+  }
+
+  const undone = [];
+  const undoFailures = [];
+
+  for (const entry of entries.slice().reverse()) {
+    try {
+      const ua = entry.undo_action;
+      if (ua.type === UNDO_MOVE) {
+        await bookmarkCall("move", ua.id, { parentId: ua.parentId });
+      } else if (ua.type === UNDO_RENAME) {
+        await bookmarkCall("update", ua.id, { title: ua.title });
+      } else if (ua.type === UNDO_DELETE_FOLDER) {
+        await bookmarkCall("remove", ua.id);
+      }
+      undone.push(entry.undo_id);
+    } catch (error) {
+      undoFailures.push({
+        undo_id: entry.undo_id,
+        error: error.message || String(error),
+      });
+    }
+  }
+
+  await chromeStorageSet(UNDO_LOG_STORAGE_NAME, remaining);
+  return {
+    undone: true,
+    execution_id: lastExecutionId,
+    count: undone.length,
+    failures: undoFailures,
+    hasMore: remaining.length > 0,
+  };
+}
+
+async function applyAction(action, focusPath, executionId) {
+  const policy = checkActionPolicy(action, focusPath);
+  if (!policy.allowed) {
+    throw new Error(`Policy blocked: ${policy.reason}`);
+  }
+
   switch (action.action_type) {
-    case "create_folder":
+    case "create_folder": {
       if (!action.target_path) {
         throw new Error("create_folder requires target_path");
       }
-      await ensureFolderPath(action.target_path);
+      const createdId = await ensureFolderPath(action.target_path);
+      if (executionId) {
+        await recordUndo(executionId, action, { id: createdId, title: action.target_path.split("/").pop() }, UNDO_DELETE_FOLDER);
+      }
       return;
-    case "rename_folder":
+    }
+    case "rename_folder": {
       if (!action.to_name) {
         throw new Error("rename_folder requires to_name");
       }
-      await renameFolder(action);
+      const folderId = await resolveFolderId(action);
+      if (!folderId) {
+        throw new Error("Could not resolve folder by locator");
+      }
+      const [folderNode] = await bookmarkCall("get", folderId);
+      if (executionId) {
+        await recordUndo(executionId, action, { id: folderId, title: folderNode.title }, UNDO_RENAME);
+      }
+      await bookmarkCall("update", folderId, { title: action.to_name });
       return;
-    case "move_folder":
+    }
+    case "move_folder": {
       if (!action.to_path) {
         throw new Error("move_folder requires to_path");
       }
-      await moveFolder(action);
+      const srcFolderId = await resolveFolderId(action);
+      if (!srcFolderId) {
+        throw new Error("Could not resolve folder by locator");
+      }
+      const fromPath = expectedFolderPath(action);
+      if (fromPath && (action.to_path === fromPath || action.to_path.startsWith(`${fromPath}/`))) {
+        throw new Error("move_folder destination must not be the source folder or its descendant");
+      }
+      const [srcNode] = await bookmarkCall("get", srcFolderId);
+      const destFolderId = await ensureFolderPath(action.to_path);
+      if (executionId) {
+        await recordUndo(executionId, action, { id: srcFolderId, parentId: srcNode.parentId, title: srcNode.title }, UNDO_MOVE);
+      }
+      await bookmarkCall("move", srcFolderId, { parentId: destFolderId });
       return;
-    case "move_bookmark":
+    }
+    case "move_bookmark": {
       if (!action.to_path) {
         throw new Error("move_bookmark requires to_path");
       }
-      await moveBookmark(action);
+      const bookmarkId = await resolveBookmarkId(action);
+      if (!bookmarkId) {
+        throw new Error("Could not resolve bookmark by locator");
+      }
+      const [node] = await bookmarkCall("get", bookmarkId);
+      const destinationFolderId = await ensureFolderPath(action.to_path);
+      if (executionId) {
+        await recordUndo(executionId, action, { id: bookmarkId, parentId: node.parentId, title: node.title, url: node.url || null }, UNDO_MOVE);
+      }
+      await bookmarkCall("move", bookmarkId, { parentId: destinationFolderId });
       return;
-    case "remove_duplicate":
-      await removeBookmark(action);
+    }
+    case "remove_duplicate": {
+      const dupBookmarkId = await resolveBookmarkId(action);
+      if (!dupBookmarkId) {
+        throw new Error("Could not resolve bookmark by locator");
+      }
+      const [dupNode] = await bookmarkCall("get", dupBookmarkId);
+      const quarantineFolderId = await ensureFolderPath(QUARANTINE_FOLDER_PATH);
+      if (executionId) {
+        await recordUndo(executionId, action, { id: dupBookmarkId, parentId: dupNode.parentId, title: dupNode.title, url: dupNode.url || null }, UNDO_MOVE);
+      }
+      await bookmarkCall("move", dupBookmarkId, { parentId: quarantineFolderId });
       return;
+    }
     default:
       throw new Error(`Unsupported action_type: ${action.action_type}`);
   }
-}
-
-async function renameFolder(action) {
-  const folderId = await resolveFolderId(action);
-  if (!folderId) {
-    throw new Error("Could not resolve folder by locator");
-  }
-  await bookmarkCall("update", folderId, { title: action.to_name });
-}
-
-async function moveFolder(action) {
-  const folderId = await resolveFolderId(action);
-  if (!folderId) {
-    throw new Error("Could not resolve folder by locator");
-  }
-  const fromPath = expectedFolderPath(action);
-  if (fromPath && (action.to_path === fromPath || action.to_path.startsWith(`${fromPath}/`))) {
-    throw new Error("move_folder destination must not be the source folder or its descendant");
-  }
-  const destinationFolderId = await ensureFolderPath(action.to_path);
-  await bookmarkCall("move", folderId, { parentId: destinationFolderId });
-}
-
-async function moveBookmark(action) {
-  const bookmarkId = await resolveBookmarkId(action);
-  if (!bookmarkId) {
-    throw new Error("Could not resolve bookmark by locator");
-  }
-  const destinationFolderId = await ensureFolderPath(action.to_path);
-  await bookmarkCall("move", bookmarkId, { parentId: destinationFolderId });
-}
-
-async function removeBookmark(action) {
-  const bookmarkId = await resolveBookmarkId(action);
-  if (!bookmarkId) {
-    throw new Error("Could not resolve bookmark by locator");
-  }
-  await bookmarkCall("remove", bookmarkId);
 }
 
 async function resolveFolderId(action) {

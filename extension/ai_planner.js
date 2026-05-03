@@ -6,7 +6,7 @@
   const DEFAULT_APPROVE_THRESHOLD = 0.85;
   const MAX_EXTENSION_FETCH_TIMEOUT_MS = 300000;
   const DEFAULT_REQUEST_TIMEOUT_MS = 120000;
-  const MAX_ACTIVATION_LINT_ATTEMPTS = 3;
+  const DEFAULT_MAX_RETRIES = 1;
 
   const SUPPORTED_AI_ACTIONS = [
     "rename_folder",
@@ -80,6 +80,7 @@
       DEFAULT_APPROVE_THRESHOLD,
     );
     const requestTimeoutMs = requestTimeoutMsWithinMv3Lifetime(options.requestTimeoutMs);
+    const maxRetries = options.maxRetries;
     const focusPath = String(options.focusPath || "").trim();
     const userInstruction = String(options.userInstruction || "").trim();
     const onProgress = typeof options.onProgress === "function" ? options.onProgress : function () {};
@@ -92,6 +93,7 @@
       model,
       maxActions,
       requestTimeoutMs,
+      maxRetries,
       snapshot: planningSnapshot,
       focusPath,
       userInstruction,
@@ -136,6 +138,7 @@
       DEFAULT_APPROVE_THRESHOLD,
     );
     const requestTimeoutMs = requestTimeoutMsWithinMv3Lifetime(options.requestTimeoutMs);
+    const maxRetries = options.maxRetries;
     const focusPath = String(options.focusPath || "").trim();
     const userInstruction = String(options.userInstruction || "").trim();
     if (!userInstruction) {
@@ -151,6 +154,7 @@
       model,
       maxActions,
       requestTimeoutMs,
+      maxRetries,
       snapshot: planningSnapshot,
       existingPlan: options.existingPlan,
       userInstruction,
@@ -180,7 +184,7 @@
     };
   }
 
-  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, snapshot, focusPath, userInstruction, preferences, onProgress }) {
+  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, focusPath, userInstruction, preferences, onProgress }) {
     const systemText = buildSystemPrompt(maxActions, preferences);
     const userText = buildUserPrompt(snapshot, focusPath, userInstruction, preferences);
     const schema = activationResponseSchema();
@@ -190,6 +194,7 @@
       apiStyle,
       model,
       requestTimeoutMs,
+      maxRetries,
       schema,
       systemText,
       userText,
@@ -199,7 +204,7 @@
     });
   }
 
-  async function requestRevisionPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, snapshot, existingPlan, userInstruction, preferences, onProgress }) {
+  async function requestRevisionPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, existingPlan, userInstruction, preferences, onProgress }) {
     const systemText = buildSystemPrompt(maxActions, preferences);
     const userText = buildRevisionUserPrompt(existingPlan, snapshot, userInstruction, preferences);
     const schema = activationResponseSchema();
@@ -209,6 +214,7 @@
       apiStyle,
       model,
       requestTimeoutMs,
+      maxRetries,
       schema,
       systemText,
       userText,
@@ -218,14 +224,15 @@
     });
   }
 
-  async function requestLintedActivationPlan({ apiKey, apiBaseUrl, apiStyle, model, requestTimeoutMs, schema, systemText, userText, snapshot, onProgress, progressLabel }) {
+  async function requestLintedActivationPlan({ apiKey, apiBaseUrl, apiStyle, model, requestTimeoutMs, maxRetries, schema, systemText, userText, snapshot, onProgress, progressLabel }) {
+    const maxAttempts = Math.max(1, (Number.isFinite(maxRetries) ? maxRetries : DEFAULT_MAX_RETRIES) + 1);
     let retryFeedback = "";
     const errors = [];
 
-    for (let lintAttempt = 1; lintAttempt <= MAX_ACTIVATION_LINT_ATTEMPTS; lintAttempt++) {
+    for (let lintAttempt = 1; lintAttempt <= maxAttempts; lintAttempt++) {
       for (const attempt of buildRequestAttempts(apiStyle, apiBaseUrl)) {
         try {
-          await onProgress(`Calling LLM endpoint (${attemptLabel(attempt)}) for ${progressLabel}, lint pass ${lintAttempt}/${MAX_ACTIVATION_LINT_ATTEMPTS}...`);
+          await onProgress(`Calling LLM endpoint (${attemptLabel(attempt)}) for ${progressLabel}, pass ${lintAttempt}/${maxAttempts}...`);
           const payload = await requestCompatibleAttempt({
             attempt,
             apiBaseUrl,
@@ -253,7 +260,7 @@
       }
     }
 
-    throw new Error(`OpenAI-compatible HTTPS ${progressLabel} failed after ${MAX_ACTIVATION_LINT_ATTEMPTS} activation lint attempt(s). ${errors.join(" | ")}`);
+    throw new Error(`OpenAI-compatible HTTPS ${progressLabel} failed after ${maxAttempts} attempt(s). ${errors.join(" | ")}`);
   }
 
   function buildActivationRetryFeedback(lintErrors) {
@@ -312,7 +319,7 @@
       return postCompatible(endpointUrl(apiBaseUrl, "completions"), apiKey, requestTimeoutMs, {
         model,
         prompt: `${systemText}\nReturn a single JSON object and no Markdown fences.\n\n${userText}`,
-        max_tokens: 4096,
+        max_tokens: 16384,
         temperature: 0,
       });
     }
@@ -387,14 +394,28 @@
         signal: controller.signal,
       });
     } catch (error) {
+      clearTimeout(timeoutId);
       if (error && error.name === "AbortError") {
         throw new Error(`Request timed out after ${Math.round(effectiveTimeout / 1000)}s: ${url}`);
       }
       throw error;
-    } finally {
-      clearTimeout(timeoutId);
     }
-    const text = await response.text();
+    let text;
+    let bodyTimeoutId;
+    try {
+      text = await Promise.race([
+        response.text(),
+        new Promise((_, reject) => {
+          bodyTimeoutId = setTimeout(() => reject(new Error(`Response body timed out after ${Math.round(effectiveTimeout / 1000)}s`)), effectiveTimeout);
+        }),
+      ]);
+    } catch (error) {
+      clearTimeout(timeoutId);
+      clearTimeout(bodyTimeoutId);
+      throw error;
+    }
+    clearTimeout(timeoutId);
+    clearTimeout(bodyTimeoutId);
     let payload = null;
     try {
       payload = text ? JSON.parse(text) : {};
@@ -544,14 +565,11 @@
         return;
       }
       const op = String(activation.op || "");
-      const nodeKind = String(activation.node_kind || "");
       const nodeId = String(activation.node_id || "");
+      const target = String(activation.target || "");
       const confidence = Number(activation.confidence);
       if (!SUPPORTED_AI_ACTIONS.includes(op)) {
         errors.push(`${path}.op must be one of ${SUPPORTED_AI_ACTIONS.join(", ")}.`);
-      }
-      if (!["bookmark", "folder", "none"].includes(nodeKind)) {
-        errors.push(`${path}.node_kind must be bookmark, folder, or none.`);
       }
       if (!Number.isFinite(confidence)) {
         errors.push(`${path}.confidence must be a finite number.`);
@@ -562,34 +580,28 @@
 
       if (op === "move_bookmark") {
         const bookmark = bookmarkIndex.get(nodeId);
-        if (nodeKind !== "bookmark") errors.push(`${path}.node_kind must be bookmark for move_bookmark.`);
         if (!bookmark) errors.push(`${path}.node_id must reference an existing bookmark id.`);
         if (bookmark && !pathInFocusScope(bookmark.folder_path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
-        if (!isAbsolutePath(String(activation.destination_path || ""))) errors.push(`${path}.destination_path must be an absolute folder path.`);
+        if (!isAbsolutePath(target)) errors.push(`${path}.target must be an absolute folder path.`);
       } else if (op === "move_folder") {
         const folder = folderIndex.get(nodeId);
-        const destinationPath = String(activation.destination_path || "");
-        if (nodeKind !== "folder") errors.push(`${path}.node_kind must be folder for move_folder.`);
         if (!folder) errors.push(`${path}.node_id must reference an existing folder id.`);
         if (folder && !pathInFocusScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
-        if (!isAbsolutePath(destinationPath)) errors.push(`${path}.destination_path must be an absolute folder path.`);
-        if (folder && (destinationPath === folder.path || destinationPath.startsWith(`${folder.path}/`))) {
-          errors.push(`${path}.destination_path must not be the same folder or its descendant.`);
+        if (!isAbsolutePath(target)) errors.push(`${path}.target must be an absolute folder path.`);
+        if (folder && (target === folder.path || target.startsWith(`${folder.path}/`))) {
+          errors.push(`${path}.target must not be the same folder or its descendant.`);
         }
       } else if (op === "rename_folder") {
         const folder = folderIndex.get(nodeId);
-        if (nodeKind !== "folder") errors.push(`${path}.node_kind must be folder for rename_folder.`);
         if (!folder) errors.push(`${path}.node_id must reference an existing folder id.`);
         if (folder && !pathInFocusScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
-        if (!sanitizeForPrompt(activation.new_title || "")) errors.push(`${path}.new_title must be non-empty.`);
+        if (!sanitizeForPrompt(target)) errors.push(`${path}.target must be non-empty (new title).`);
       } else if (op === "create_folder") {
-        if (nodeKind !== "none") errors.push(`${path}.node_kind must be none for create_folder.`);
-        if (!isAbsolutePath(String(activation.create_path || ""))) errors.push(`${path}.create_path must be an absolute folder path.`);
-        if (!pathInFocusScope(String(activation.create_path || ""), focusPath)) errors.push(`${path}.create_path must stay within the focused folder.`);
+        if (!isAbsolutePath(target)) errors.push(`${path}.target must be an absolute folder path.`);
+        if (!pathInFocusScope(target, focusPath)) errors.push(`${path}.target must stay within the focused folder.`);
       } else if (op === "remove_duplicate") {
         const bookmark = bookmarkIndex.get(nodeId);
         const duplicateOf = bookmarkIndex.get(String(activation.duplicate_of_id || ""));
-        if (nodeKind !== "bookmark") errors.push(`${path}.node_kind must be bookmark for remove_duplicate.`);
         if (!bookmark) errors.push(`${path}.node_id must reference an existing bookmark id.`);
         if (bookmark && !pathInFocusScope(bookmark.folder_path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
         if (!duplicateOf) errors.push(`${path}.duplicate_of_id must reference an existing bookmark id.`);
@@ -597,8 +609,7 @@
           errors.push(`${path}.duplicate_of_id must point to a bookmark with the same normalized_url.`);
         }
       } else if (op === "keep_for_review") {
-        if (nodeKind === "bookmark" && nodeId && !bookmarkIndex.has(nodeId)) errors.push(`${path}.node_id must reference an existing bookmark id.`);
-        if (nodeKind === "folder" && nodeId && !folderIndex.has(nodeId)) errors.push(`${path}.node_id must reference an existing folder id.`);
+        if (nodeId && !bookmarkIndex.has(nodeId) && !folderIndex.has(nodeId)) errors.push(`${path}.node_id must reference an existing bookmark or folder id.`);
       }
     });
 
@@ -610,38 +621,37 @@
     const reason = sanitizeForPrompt(activation.reason || "Needs review.") || "Needs review.";
     const confidence = finiteNumber(activation.confidence, 0);
     const nodeId = String(activation.node_id || "");
+    const target = String(activation.target || "");
 
     if (op === "move_bookmark") {
       const bookmark = bookmarkIndex.get(nodeId);
-      const destinationPath = String(activation.destination_path || "");
-      if (!bookmark || !isAbsolutePath(destinationPath)) {
+      if (!bookmark || !isAbsolutePath(target)) {
         return reviewActivation(activation, reason, confidence, "Move bookmark activation could not be resolved locally.");
       }
       return baseCompiledAction(activation, reason, confidence, {
         action_type: "move_bookmark",
         bookmark_locator: bookmarkLocator(bookmark),
         from_path: bookmark.folder_path,
-        to_path: destinationPath,
+        to_path: target,
       });
     }
 
     if (op === "move_folder") {
       const folder = folderIndex.get(nodeId);
-      const destinationPath = String(activation.destination_path || "");
-      if (!folder || !isAbsolutePath(destinationPath) || destinationPath === folder.path || destinationPath.startsWith(`${folder.path}/`)) {
+      if (!folder || !isAbsolutePath(target) || target === folder.path || target.startsWith(`${folder.path}/`)) {
         return reviewActivation(activation, reason, confidence, "Move folder activation could not be resolved safely.");
       }
       return baseCompiledAction(activation, reason, confidence, {
         action_type: "move_folder",
         folder_locator: folderLocator(folder),
         from_path: folder.path,
-        to_path: destinationPath,
+        to_path: target,
       });
     }
 
     if (op === "rename_folder") {
       const folder = folderIndex.get(nodeId);
-      const newTitle = sanitizeForPrompt(activation.new_title || "");
+      const newTitle = sanitizeForPrompt(target);
       if (!folder || !newTitle) {
         return reviewActivation(activation, reason, confidence, "Rename folder activation could not be resolved locally.");
       }
@@ -654,13 +664,12 @@
     }
 
     if (op === "create_folder") {
-      const createPath = String(activation.create_path || "");
-      if (!isAbsolutePath(createPath)) {
+      if (!isAbsolutePath(target)) {
         return reviewActivation(activation, reason, confidence, "Create folder activation did not include an absolute folder path.");
       }
       return baseCompiledAction(activation, reason, confidence, {
         action_type: "create_folder",
-        target_path: createPath,
+        target_path: target,
       });
     }
 
@@ -911,16 +920,19 @@
       "The snapshot was collected from chrome.bookmarks and enriched in fast mode with title/domain evidence only.",
       "Be conservative: if the title/domain/folder path is not enough to determine what the page is about, emit keep_for_review instead of moving.",
       "If a bookmark's purpose is genuinely unclear from its title and domain alone, keep it for review and mention in the reason that visiting the URL or searching its domain would clarify its category.",
-      "For move_bookmark or remove_duplicate, set node_kind=bookmark and node_id to the bookmark id from the snapshot.",
-      "For move_folder or rename_folder, set node_kind=folder and node_id to the folder id from the snapshot.",
-      "For create_folder, set create_path to the absolute folder path to create.",
+      "For move_bookmark or remove_duplicate, set node_id to the bookmark id from the snapshot.",
+      "For move_folder or rename_folder, set node_id to the folder id from the snapshot.",
+      "For move_bookmark or move_folder, set target to the absolute destination folder path.",
+      "For rename_folder, set target to the new folder title.",
+      "For create_folder, set target to the absolute folder path to create.",
+      "For remove_duplicate, set duplicate_of_id to the id of the original bookmark.",
       "Do not invent bookmarks or folders that are not implied by the snapshot.",
     ];
     if (focusPath) {
       prompt.push(`Focus on bookmarks currently under ${focusPath}. Do not propose unrelated changes outside that focus folder.`);
     }
     const instructionPrefix = userInstruction ? `User instruction: ${userInstruction}\n\n` : "";
-    return `${instructionPrefix}${prompt.join("\n")}\n\nRules:\n${JSON.stringify(rulesSummary, null, 2)}\n\nSnapshot:\n${JSON.stringify(compactSnapshot(snapshot), null, 2)}`;
+    return `${instructionPrefix}${prompt.join("\n")}\n\nRules:\n${JSON.stringify(rulesSummary)}\n\n${encodeSnapshot(snapshot, true)}`;
   }
 
   function buildRevisionUserPrompt(existingPlan, snapshot, userInstruction, preferences) {
@@ -940,55 +952,91 @@
       "Preserve useful existing intentions that the instruction does not change.",
       "Remove or modify activations that conflict with the instruction.",
       "Do not invent bookmarks or folders that are not implied by the current snapshot.",
-      "For move_bookmark or remove_duplicate, set node_kind=bookmark and node_id to the bookmark id from the snapshot.",
-      "For move_folder or rename_folder, set node_kind=folder and node_id to the folder id from the snapshot.",
-      "For create_folder, set create_path to the absolute folder path to create.",
+      "For move_bookmark or remove_duplicate, set node_id to the bookmark id from the snapshot.",
+      "For move_folder or rename_folder, set node_id to the folder id from the snapshot.",
+      "For move_bookmark or move_folder, set target to the absolute destination folder path.",
+      "For rename_folder, set target to the new folder title.",
+      "For create_folder, set target to the absolute folder path to create.",
       `User revision instruction: ${sanitizeForPrompt(userInstruction)}`,
       "",
-      `Current reviewed plan:\n${JSON.stringify(compactPlan(existingPlan), null, 2)}`,
+      encodePlan(existingPlan),
       "",
-      `Rules:\n${JSON.stringify(rulesSummary, null, 2)}`,
+      "Rules:",
+      JSON.stringify(rulesSummary),
       "",
-      `Current snapshot:\n${JSON.stringify(compactSnapshot(snapshot), null, 2)}`,
+      encodeSnapshot(snapshot, false),
     ].join("\n");
   }
 
-  function compactPlan(plan) {
-    return {
-      plan_version: String(plan.plan_version || "2"),
-      plan_kind: String(plan.plan_kind || "reviewed"),
-      summary: plan.summary || {},
-      actions: (plan.actions || []).map(function (action) {
-        return {
-          action_id: String(action.action_id || ""),
-          action_type: String(action.action_type || ""),
-          status: String(action.status || ""),
-          reason: sanitizeForPrompt(action.reason || ""),
-          confidence: finiteNumber(action.confidence, 0),
-          bookmark_locator: action.bookmark_locator || {},
-          folder_locator: action.folder_locator || {},
-          from_path: String(action.from_path || ""),
-          to_path: String(action.to_path || ""),
-          target_path: String(action.target_path || ""),
-          to_name: String(action.to_name || ""),
-        };
-      }),
-    };
+  function _pipeSafe(text) {
+    return String(text || "").replace(/\|/g, "¦");
   }
 
-  function compactSnapshot(snapshot) {
-    var sanitizedBookmarks = (snapshot.bookmarks || []).map(function (bookmark) {
-      return Object.assign({}, bookmark, {
-        title: sanitizeForPrompt(bookmark.title),
-        url: sanitizeForPrompt(bookmark.url),
-      });
-    });
-    return {
-      created_at: snapshot.created_at,
-      focus_path: snapshot.focus_path,
-      folders: snapshot.folders || [],
-      bookmarks: sanitizedBookmarks,
-    };
+  function encodeSnapshot(snapshot, includeStatus) {
+    var lines = [];
+    if (snapshot.focus_path) {
+      lines.push("Focus: " + snapshot.focus_path);
+      lines.push("");
+    }
+    lines.push("Folders (id|path):");
+    var folders = snapshot.folders || [];
+    for (var fi = 0; fi < folders.length; fi++) {
+      var f = folders[fi];
+      lines.push(f.id + "|" + _pipeSafe(f.path));
+    }
+    lines.push("");
+    if (includeStatus) {
+      lines.push("Bookmarks (id|title|domain|folder_path|status):");
+    } else {
+      lines.push("Bookmarks (id|title|domain|folder_path):");
+    }
+    var bookmarks = snapshot.bookmarks || [];
+    for (var bi = 0; bi < bookmarks.length; bi++) {
+      var b = bookmarks[bi];
+      var title = _pipeSafe(sanitizeForPrompt(b.title));
+      var domain = _pipeSafe(b.domain || "");
+      var fp = _pipeSafe(b.folder_path || "");
+      var line = b.id + "|" + title + "|" + domain + "|" + fp;
+      if (includeStatus) {
+        var status = (b.review_status === "fast_reviewed") ? "F" : "R";
+        line += "|" + status;
+      }
+      lines.push(line);
+    }
+    return lines.join("\n");
+  }
+
+  function encodePlan(plan) {
+    var actions = plan.actions || [];
+    var lines = ["Plan (action_id|action_type|status|node_id|target|confidence|reason):"];
+    for (var i = 0; i < actions.length; i++) {
+      var a = actions[i];
+      var t = String(a.action_type || "");
+      var nodeId = "";
+      var target = "";
+      if (t === "move_bookmark" || t === "remove_duplicate") {
+        nodeId = (a.bookmark_locator || {}).id || "";
+      } else if (t === "move_folder" || t === "rename_folder") {
+        nodeId = (a.folder_locator || {}).id || "";
+      }
+      if (t === "move_bookmark" || t === "move_folder") {
+        target = String(a.to_path || "");
+      } else if (t === "rename_folder") {
+        target = String(a.to_name || "");
+      } else if (t === "create_folder") {
+        target = String(a.target_path || "");
+      }
+      lines.push(
+        (a.action_id || "") + "|" +
+        t + "|" +
+        (a.status || "") + "|" +
+        nodeId + "|" +
+        _pipeSafe(target) + "|" +
+        finiteNumber(a.confidence, 0) + "|" +
+        _pipeSafe(sanitizeForPrompt(a.reason || ""))
+      );
+    }
+    return lines.join("\n");
   }
 
   function activationResponseSchema() {
@@ -1011,22 +1059,16 @@
             additionalProperties: false,
             properties: {
               op: { type: "string", enum: SUPPORTED_AI_ACTIONS },
-              node_kind: { type: "string", enum: ["bookmark", "folder", "none"] },
               node_id: { type: "string" },
-              destination_path: { type: "string" },
-              create_path: { type: "string" },
-              new_title: { type: "string" },
+              target: { type: "string" },
               duplicate_of_id: { type: "string" },
-              reason: { type: "string" },
               confidence: { type: "number" },
+              reason: { type: "string" },
             },
             required: [
               "op",
-              "node_kind",
               "node_id",
-              "destination_path",
-              "create_path",
-              "new_title",
+              "target",
               "duplicate_of_id",
               "confidence",
               "reason",

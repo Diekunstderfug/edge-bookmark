@@ -141,6 +141,10 @@
         background: #2f4f5f;
       }
 
+      button.revise {
+        background: #1e3a5f;
+      }
+
       button.danger {
         background: #7f1d1d;
       }
@@ -148,6 +152,14 @@
       button[disabled] {
         background: #9fb6b8;
         cursor: not-allowed;
+      }
+
+      #cancel-job-btn {
+        width: auto;
+        font-size: 11px;
+        padding: 3px 10px;
+        margin-left: auto;
+        white-space: nowrap;
       }
 
       ul {
@@ -280,6 +292,43 @@
         word-break: break-word;
       }
 
+      .action-item .action-actions {
+        display: flex;
+        gap: 6px;
+        margin-top: 3px;
+      }
+
+      .action-item .action-approve {
+        font-size: 10px;
+        background: #166534;
+        color: #fff;
+        border: none;
+        border-radius: 3px;
+        padding: 1px 6px;
+        cursor: pointer;
+      }
+
+      .action-item .action-revise-input {
+        display: none;
+        width: 100%;
+        box-sizing: border-box;
+        font-size: 11px;
+        padding: 3px 6px;
+        margin-top: 4px;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        font-family: inherit;
+      }
+
+      .action-item .action-revise-input.open {
+        display: block;
+      }
+
+      .action-item .action-revise-input.has-note {
+        border-color: #1e3a5f;
+        background: #f0f4ff;
+      }
+
       .action-item .confidence-dot {
         display: inline-block;
         width: 8px;
@@ -358,7 +407,7 @@
         <textarea id="user-instruction" rows="2" data-i18n-placeholder="placeholder_instruction" placeholder="Describe how you want the AI to organize your bookmarks (optional)"></textarea>
         <button id="generate-ai-btn" type="button" data-i18n="btn_generate">Generate AI Plan</button>
         <div style="height: 8px;"></div>
-        <button id="revise-ai-btn" class="secondary" type="button" disabled data-i18n="btn_revise">Revise Loaded Plan with Instruction</button>
+        <button id="export-snapshot-btn" type="button" data-i18n="btn_export">Export Current Snapshot</button>
       </div>
 
       <div class="panel">
@@ -366,7 +415,7 @@
       </div>
 
       <div class="panel">
-        <div><span id="spinner" class="spinner" hidden></span><span id="status">No plan loaded yet.</span></div>
+        <div style="display:flex;align-items:center;gap:8px;"><span id="spinner" class="spinner" hidden></span><span id="status">No plan loaded yet.</span><button id="cancel-job-btn" class="danger" type="button" hidden data-i18n="btn_cancel_job">Force Stop</button></div>
         <div class="stats" id="stats" hidden>
           <div class="stat"><strong id="total-count">0</strong><span data-i18n="stat_total">Total</span></div>
           <div class="stat"><strong id="executable-count">0</strong><span data-i18n="stat_executable">Executable</span></div>
@@ -381,11 +430,13 @@
         <div id="preview-list"></div>
       </div>
 
-      <div class="panel">
-        <button id="export-snapshot-btn" type="button" data-i18n="btn_export">Export Current Snapshot</button>
-      </div>
-
+      <button id="revise-ai-btn" class="revise" type="button" disabled data-i18n="btn_revise">Revise Loaded Plan</button>
+      <div style="height: 8px;"></div>
       <button id="execute-btn" disabled data-i18n="btn_execute">Execute Reviewed Plan</button>
+      <div style="height: 8px;"></div>
+      <button id="undo-btn" class="danger" type="button" disabled data-i18n="btn_undo">Undo Last Execution</button>
+      <div style="height: 8px;"></div>
+      <button id="continue-btn" type="button" hidden data-i18n="btn_continue">Generate New Plan for Remaining</button>
       <div style="height: 8px;"></div>
       <button id="download-report-btn" disabled data-i18n="btn_download_report">Download Execution Report</button>
     </section>
@@ -416,8 +467,16 @@
         <label for="api-key" data-i18n="label_api_key">API key</label>
         <input id="api-key" type="password" autocomplete="off" placeholder="sk-..., sk-or-..., provider key">
 
-        <label for="request-timeout" data-i18n="label_request_timeout">Request timeout (seconds)</label>
-        <input id="request-timeout" type="number" min="10" max="300" value="120">
+        <div class="wide-row">
+          <div>
+            <label for="request-timeout" data-i18n="label_request_timeout">Request timeout (seconds)</label>
+            <input id="request-timeout" type="number" min="10" max="300" value="120">
+          </div>
+          <div>
+            <label for="max-retries" data-i18n="label_max_retries">Max retries</label>
+            <input id="max-retries" type="number" min="0" max="3" value="1">
+          </div>
+        </div>
         <p class="hint" data-i18n="hint_timeout_max">Max 300s — MV3 service worker lifecycle limit</p>
 
         <div class="button-row">

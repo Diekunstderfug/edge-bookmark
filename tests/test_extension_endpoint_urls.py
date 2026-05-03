@@ -122,7 +122,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         self.assertIn("Revise the current reviewed bookmark plan", prompt_text)
         self.assertIn("Keep AI tools separate", prompt_text)
         self.assertIn("old reason", prompt_text)
-        self.assertIn("Current snapshot", prompt_text)
+        self.assertIn("Bookmarks (id|title|domain|folder_path):", prompt_text)
 
     def test_llm_schema_uses_lightweight_activations_not_full_actions(self):
         schema = self._node_eval("BookmarkAdvisorAI._activationResponseSchema()")
@@ -139,11 +139,8 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             summary: { overview: 'activation plan' },
             activations: [{
               op: 'move_bookmark',
-              node_kind: 'bookmark',
               node_id: '10',
-              destination_path: '/收藏夹栏/AI',
-              create_path: '',
-              new_title: '',
+              target: '/收藏夹栏/AI',
               duplicate_of_id: '',
               confidence: 0.92,
               reason: 'belongs with AI tools'
@@ -177,11 +174,8 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             summary: { overview: 'activation plan' },
             activations: [{
               op: 'move_bookmark',
-              node_kind: 'bookmark',
               node_id: '10',
-              destination_path: '/收藏夹栏/AI',
-              create_path: '',
-              new_title: '',
+              target: '/收藏夹栏/AI',
               duplicate_of_id: '',
               confidence: 0.92,
               reason: 'belongs with AI tools'
@@ -208,11 +202,8 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             summary: { overview: 'bad activation plan' },
             activations: [{
               op: 'move_bookmark',
-              node_kind: 'bookmark',
               node_id: 'missing',
-              destination_path: '/收藏夹栏/AI',
-              create_path: '',
-              new_title: '',
+              target: '/收藏夹栏/AI',
               duplicate_of_id: '',
               confidence: 0.92,
               reason: 'belongs with AI tools'
@@ -233,11 +224,8 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             summary: { overview: 'low confidence' },
             activations: [{
               op: 'move_bookmark',
-              node_kind: 'bookmark',
               node_id: '10',
-              destination_path: '/收藏夹栏/AI',
-              create_path: '',
-              new_title: '',
+              target: '/收藏夹栏/AI',
               duplicate_of_id: '',
               confidence: 0.2,
               reason: 'maybe AI'
@@ -285,11 +273,8 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             summary: { overview: 'outside focus' },
             activations: [{
               op: 'move_folder',
-              node_kind: 'folder',
               node_id: '20',
-              destination_path: '/收藏夹栏/Inside/Target',
-              create_path: '',
-              new_title: '',
+              target: '/收藏夹栏/Inside/Target',
               duplicate_of_id: '',
               confidence: 0.92,
               reason: 'move outside folder'
@@ -313,11 +298,8 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
           summary: { overview: 'first try' },
           activations: [{
             op: 'move_bookmark',
-            node_kind: 'bookmark',
             node_id: 'missing',
-            destination_path: '/收藏夹栏/AI',
-            create_path: '',
-            new_title: '',
+            target: '/收藏夹栏/AI',
             duplicate_of_id: '',
             confidence: 0.91,
             reason: 'move it'
@@ -327,11 +309,8 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
           summary: { overview: 'second try' },
           activations: [{
             op: 'move_bookmark',
-            node_kind: 'bookmark',
             node_id: '10',
-            destination_path: '/收藏夹栏/AI',
-            create_path: '',
-            new_title: '',
+            target: '/收藏夹栏/AI',
             duplicate_of_id: '',
             confidence: 0.91,
             reason: 'move it'
@@ -390,11 +369,8 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
           summary: { overview: 'still bad' },
           activations: [{
             op: 'move_bookmark',
-            node_kind: 'bookmark',
             node_id: 'missing',
-            destination_path: '/收藏夹栏/AI',
-            create_path: '',
-            new_title: '',
+            target: '/收藏夹栏/AI',
             duplicate_of_id: '',
             confidence: 0.91,
             reason: 'move it'
@@ -413,6 +389,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
           apiBaseUrl: 'https://api.example.com/v1/completions',
           apiStyle: 'completions',
           model: 'test-model',
+          maxRetries: 2,
           snapshot: {
             created_at: 'now',
             folders: [],
@@ -438,7 +415,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         result = cast(dict[str, object], self._node_script(body))
         self.assertEqual(result["callCount"], 3)
         self.assertEqual(result["feedbackIncludedOnLastTry"], True)
-        self.assertIn("failed after 3 activation lint attempt", cast(str, result["message"]))
+        self.assertIn("failed after 3 attempt", cast(str, result["message"]))
 
     def test_focus_snapshot_does_not_include_prefix_sibling_folder_bookmarks(self):
         body = """

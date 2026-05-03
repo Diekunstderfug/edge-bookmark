@@ -1,6 +1,7 @@
 let loadedPlan = null;
 let loadedSummary = null;
 let lastExecutionReport = null;
+const pendingReviseNotes = new Map();
 
 const STRINGS = {
   en: {
@@ -15,7 +16,11 @@ const STRINGS = {
     btn_revise: "Revise Loaded Plan",
     btn_export: "Export Snapshot",
     btn_execute: "Execute Reviewed Plan",
+    btn_undo: "Undo Last Execution",
+    btn_action_approve: "Approve",
+    placeholder_action_revise: "How should this change? (Enter to save)",
     btn_download_report: "Download Execution Report",
+    btn_continue: "Generate New Plan for Remaining",
     btn_save: "Save",
     btn_forget: "Forget Key",
     label_llm_config: "OpenAI-compatible LLM",
@@ -23,6 +28,7 @@ const STRINGS = {
     label_endpoint_mode: "Endpoint mode",
     label_api_key: "API key",
     label_request_timeout: "Request timeout (seconds)",
+    label_max_retries: "Max retries",
     label_action_preview: "Action preview",
     label_preferences: "Preferences",
     label_language: "Language",
@@ -42,7 +48,13 @@ const STRINGS = {
     status_restored_plan: "Restored last plan. Review before executing.",
     status_job_running: "Background job running...",
     status_plan_saved: "AI plan saved. Review before executing.",
+    status_undoing: "Undoing last execution...",
+    status_undone: "Undone {count} action(s).",
+    status_nothing_to_undo: "Nothing to undo.",
     status_background_completed: "Background job completed.",
+    btn_cancel_job: "Force Stop",
+    status_cancelling: "Cancelling...",
+    status_cancelled: "Job cancelled. State reset.",
     error_need_api_base_url: "Set an HTTPS OpenAI-compatible API base URL in LLM Settings.",
     error_need_model: "Set a model name in LLM Settings.",
     error_need_api_key: "Paste an API key in LLM Settings, or save one encrypted locally first.",
@@ -107,7 +119,11 @@ const STRINGS = {
     btn_revise: "按要求修改计划",
     btn_export: "导出书签快照",
     btn_execute: "执行整理计划",
+    btn_undo: "撤销上次执行",
+    btn_action_approve: "通过",
+    placeholder_action_revise: "这条怎么改？（回车保存）",
     btn_download_report: "\u4e0b\u8f7d\u6267\u884c\u62a5\u544a",
+    btn_continue: "\u4e3a\u5269\u4f59\u9879\u751f\u6210\u65b0\u8ba1\u5212",
     btn_save: "\u4fdd\u5b58",
     btn_forget: "\u5220\u9664\u5bc6\u94a5",
     label_llm_config: "模型设置",
@@ -115,6 +131,7 @@ const STRINGS = {
     label_endpoint_mode: "\u7aef\u70b9\u6a21\u5f0f",
     label_api_key: "API \u5bc6\u94a5",
     label_request_timeout: "\u8bf7\u6c42\u8d85\u65f6\uff08\u79d2\uff09",
+    label_max_retries: "\u6700\u5927\u91cd\u8bd5\u6b21\u6570",
     label_action_preview: "整理预览",
     label_preferences: "\u504f\u597d\u8bbe\u7f6e",
     label_language: "\u8bed\u8a00",
@@ -134,7 +151,13 @@ const STRINGS = {
     status_restored_plan: "已恢复上次计划，请先检查再执行。",
     status_job_running: "\u540e\u53f0\u4efb\u52a1\u6b63\u5728\u8fd0\u884c...",
     status_plan_saved: "计划已保存，请先检查再执行。",
+    status_undoing: "\u6b63\u5728\u64a4\u9500\u4e0a\u6b21\u6267\u884c...",
+    status_undone: "\u5df2\u64a4\u9500 {count} \u4e2a\u64cd\u4f5c\u3002",
+    status_nothing_to_undo: "\u6ca1\u6709\u53ef\u64a4\u9500\u7684\u64cd\u4f5c\u3002",
     status_background_completed: "\u540e\u53f0\u4efb\u52a1\u5df2\u5b8c\u6210\u3002",
+    btn_cancel_job: "\u5f3a\u5236\u7ec8\u6b62",
+    status_cancelling: "\u6b63\u5728\u7ec8\u6b62...",
+    status_cancelled: "\u5df2\u7ec8\u6b62\uff0c\u72b6\u6001\u5df2\u91cd\u7f6e\u3002",
     error_need_api_base_url: "请先在模型设置里填写 HTTPS API 地址。",
     error_need_model: "请先在模型设置里填写模型名称。",
     error_need_api_key: "请先在模型设置里填写或保存 API 密钥。",
@@ -240,6 +263,7 @@ const endpointPreviewEl = document.getElementById("endpoint-preview");
 const keyStorageStatusEl = document.getElementById("key-storage-status");
 const modelInput = document.getElementById("model");
 const requestTimeoutInput = document.getElementById("request-timeout");
+const maxRetriesInput = document.getElementById("max-retries");
 const maxActionsInput = document.getElementById("max-actions");
 const focusPathInput = document.getElementById("focus-path");
 const userInstructionInput = document.getElementById("user-instruction");
@@ -258,6 +282,9 @@ const reviseAiButton = document.getElementById("revise-ai-btn");
 const saveCredentialsButton = document.getElementById("save-credentials-btn");
 const forgetKeyButton = document.getElementById("forget-key-btn");
 const downloadReportButton = document.getElementById("download-report-btn");
+const undoButton = document.getElementById("undo-btn");
+const cancelJobButton = document.getElementById("cancel-job-btn");
+const continueButton = document.getElementById("continue-btn");
 const spinnerEl = document.getElementById("spinner");
 const planTabButton = document.getElementById("plan-tab-btn");
 const settingsTabButton = document.getElementById("settings-tab-btn");
@@ -439,6 +466,7 @@ generateAiButton.addEventListener("click", async () => {
         model: settings.model,
         maxActions: maxActionsInput.value,
         requestTimeoutMs: (parseInt(requestTimeoutInput.value, 10) || 120) * 1000,
+        maxRetries: parseInt(maxRetriesInput.value, 10),
         focusPath: focusPathInput.value,
         userInstruction: userInstructionInput.value.trim(),
         preferences: readPreferences(),
@@ -466,7 +494,17 @@ reviseAiButton.addEventListener("click", async () => {
     renderError(t("error_need_loaded_plan"));
     return;
   }
-  const userInstruction = userInstructionInput.value.trim();
+  const globalInstruction = userInstructionInput.value.trim();
+  const perActionNotes = [];
+  for (const [key, note] of pendingReviseNotes) {
+    perActionNotes.push(`- [${key}]: ${note}`);
+  }
+  const parts = [];
+  if (globalInstruction) parts.push(globalInstruction);
+  if (perActionNotes.length > 0) {
+    parts.push("Per-action revision notes:\n" + perActionNotes.join("\n"));
+  }
+  const userInstruction = parts.join("\n\n");
   if (!userInstruction) {
     renderError(t("error_need_revision_instruction"));
     return;
@@ -533,6 +571,7 @@ reviseAiButton.addEventListener("click", async () => {
         model: settings.model,
         maxActions: maxActionsInput.value,
         requestTimeoutMs: (parseInt(requestTimeoutInput.value, 10) || 120) * 1000,
+        maxRetries: parseInt(maxRetriesInput.value, 10),
         focusPath: focusPathInput.value,
         userInstruction,
         preferences: readPreferences(),
@@ -542,6 +581,7 @@ reviseAiButton.addEventListener("click", async () => {
       throw new Error(response.error);
     }
     updateStatus(t("status_revision_background"), "");
+    pendingReviseNotes.clear();
   } catch (error) {
     renderError(error instanceof Error ? error.message : String(error));
   } finally {
@@ -575,6 +615,7 @@ executeButton.addEventListener("click", async () => {
   try {
     await startBackgroundJobAndRender("apply-reviewed-plan", {
       plan: loadedPlan,
+      focusPath: document.getElementById("focus-path").value,
     });
     updateStatus(t("status_execution_background"), "");
   } catch (error) {
@@ -587,6 +628,52 @@ executeButton.addEventListener("click", async () => {
       hideSpinner();
     }
   }
+});
+
+undoButton.addEventListener("click", async () => {
+  undoButton.disabled = true;
+  updateStatus(t("status_undoing"), "");
+  showSpinner();
+  try {
+    const response = await sendRuntimeMessage({ type: "undo-last-execution" });
+    if (response && response.error) {
+      throw new Error(response.error);
+    }
+    if (response && response.undone) {
+      updateStatus(t("status_undone").replace("{count}", response.count), "ok");
+      undoButton.disabled = !response.hasMore;
+    } else {
+      updateStatus(response.reason || t("status_nothing_to_undo"), "");
+    }
+  } catch (error) {
+    renderError(error instanceof Error ? error.message : String(error));
+  } finally {
+    hideSpinner();
+  }
+});
+
+cancelJobButton.addEventListener("click", async () => {
+  cancelJobButton.hidden = true;
+  updateStatus(t("status_cancelling"), "");
+  try {
+    await sendRuntimeMessage({ type: "cancel-active-job" });
+  } catch (_error) {
+    // Service worker may have already restarted — clear storage directly
+  }
+  try {
+    chrome.storage.local.remove([ACTIVE_JOB_STORAGE_NAME, "bookmarkAdvisorProgress"]);
+  } catch (_e) { /* ignore */ }
+  activeBackgroundJob = null;
+  hideSpinner();
+  generateAiButton.disabled = false;
+  reviseAiButton.disabled = !loadedPlan;
+  executeButton.disabled = !loadedSummary || !loadedSummary.ok || loadedSummary.executableActions.length === 0;
+  updateStatus(t("status_cancelled"), "");
+});
+
+continueButton.addEventListener("click", () => {
+  continueButton.hidden = true;
+  generateAiButton.click();
 });
 
 exportSnapshotButton.addEventListener("click", async () => {
@@ -954,6 +1041,7 @@ function loadPlan(plan) {
   loadedSummary = summary;
   lastExecutionReport = null;
   downloadReportButton.disabled = true;
+  continueButton.hidden = true;
   renderSummary(summary);
   executeButton.disabled = !summary.ok || summary.executableActions.length === 0;
   reviseAiButton.disabled = false;
@@ -1000,10 +1088,19 @@ function sortCategories(categories) {
   });
 }
 
+function actionDisplayStatus(action) {
+  const type = String(action.action_type || "");
+  if (type === "keep_for_review") return "review";
+  const status = String(action.status || "").trim();
+  if (status === "approved" || status === "edited") return "executable";
+  if (status === "blocked") return "blocked";
+  return "pending";
+}
+
 function buildCategoryElement(category) {
-  const isReview = category.key === REVIEW_CATEGORY_KEY;
-  const displayName = isReview ? t("cat_review") : lastSegment(category.path);
-  const subtitle = isReview ? t("cat_review_hint") : category.path;
+  const isReviewCategory = category.key === REVIEW_CATEGORY_KEY;
+  const displayName = isReviewCategory ? t("cat_review") : lastSegment(category.path);
+  const subtitle = isReviewCategory ? t("cat_review_hint") : category.path;
   const actionCount = category.actions.length;
 
   const group = document.createElement("div");
@@ -1047,7 +1144,7 @@ function buildCategoryElement(category) {
   header.setAttribute("aria-controls", details.id);
 
   for (const action of category.actions) {
-    details.appendChild(buildActionItem(action, isReview));
+    details.appendChild(buildActionItem(action));
   }
 
   header.addEventListener("click", () => {
@@ -1074,13 +1171,14 @@ function buildCategoryElement(category) {
   return group;
 }
 
-function buildActionItem(action, isReview) {
+function buildActionItem(action) {
   const type = String(action.action_type || "");
   const title = actionTitle(action);
   const reason = String(action.reason || "");
   const confidence = Number(action.confidence);
   const fromPath = String(action.from_path || "");
   const toPath = String(action.to_path || action.target_path || action.to_name || "");
+  const needsReview = actionDisplayStatus(action) !== "executable";
 
   const item = document.createElement("div");
   item.className = "action-item";
@@ -1093,7 +1191,7 @@ function buildActionItem(action, isReview) {
   metaEl.className = "action-meta";
 
   const typeLabel = document.createElement("span");
-  typeLabel.className = "action-type-label" + (isReview ? " review" : "");
+  typeLabel.className = "action-type-label" + (needsReview ? " review" : "");
   typeLabel.textContent = actionTypeLabel(type);
 
   const confDot = document.createElement("span");
@@ -1121,6 +1219,68 @@ function buildActionItem(action, isReview) {
   if (reason) {
     item.appendChild(reasonEl);
   }
+
+  if (needsReview && action.status === "proposed" && type !== "keep_for_review") {
+    const actionsRow = document.createElement("div");
+    actionsRow.className = "action-actions";
+    const approveBtn = document.createElement("button");
+    approveBtn.className = "action-approve";
+    approveBtn.textContent = t("btn_action_approve");
+    approveBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      action.status = "approved";
+      saveLastPlan(loadedPlan);
+      loadPlan(loadedPlan);
+    });
+    actionsRow.appendChild(approveBtn);
+    item.appendChild(actionsRow);
+  }
+
+  const actionKey = action.action_id || `${type}-${title}`;
+  const savedNote = pendingReviseNotes.get(actionKey) || "";
+
+  const reviseInput = document.createElement("input");
+  reviseInput.type = "text";
+  reviseInput.className = "action-revise-input";
+  reviseInput.placeholder = t("placeholder_action_revise");
+  if (savedNote) {
+    reviseInput.value = savedNote;
+    reviseInput.classList.add("open", "has-note");
+  }
+  reviseInput.addEventListener("click", (e) => e.stopPropagation());
+  reviseInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const text = reviseInput.value.trim();
+      if (text) {
+        pendingReviseNotes.set(actionKey, text);
+        reviseInput.classList.add("has-note");
+      } else {
+        pendingReviseNotes.delete(actionKey);
+        reviseInput.classList.remove("has-note");
+      }
+      reviseInput.blur();
+    }
+  });
+  reviseInput.addEventListener("blur", () => {
+    const text = reviseInput.value.trim();
+    if (text) {
+      pendingReviseNotes.set(actionKey, text);
+      reviseInput.classList.add("has-note");
+    } else {
+      pendingReviseNotes.delete(actionKey);
+      reviseInput.classList.remove("has-note");
+    }
+  });
+
+  item.addEventListener("click", () => {
+    const wasHidden = !reviseInput.classList.contains("open");
+    reviseInput.classList.toggle("open");
+    if (wasHidden) reviseInput.focus();
+  });
+
+  item.style.cursor = "pointer";
+  item.appendChild(reviseInput);
   return item;
 }
 
@@ -1159,6 +1319,7 @@ function renderExecutionResult(report) {
   const succeeded = report.succeeded || [];
   lastExecutionReport = report;
   downloadReportButton.disabled = false;
+  undoButton.disabled = succeeded.length === 0;
   saveLastReport(report);
   statusEl.className = failures.length === 0 ? "ok" : "error";
   statusEl.textContent =
@@ -1166,11 +1327,17 @@ function renderExecutionResult(report) {
       ? t("execution_applied").replace("{n}", succeeded.length)
       : t("execution_failures").replace("{n}", failures.length);
 
+  const hasRemaining = loadedPlan && (loadedPlan.actions || []).some(
+    (a) => actionDisplayStatus(a) === "pending" || actionDisplayStatus(a) === "review",
+  );
+  continueButton.hidden = !hasRemaining;
+
   previewListEl.innerHTML = "";
   const list = document.createElement("ul");
   const items = [
     `${t("execution_succeeded")} ${succeeded.length}`,
     `${t("execution_failed")} ${failures.length}`,
+    ...succeeded.filter((s) => s.target).map((s) => `${s.actionId || s.actionType}: ${s.target}`),
     ...failures.map((failure) => `${failure.actionId || failure.actionType}: ${failure.error}`),
   ];
   for (const item of items) {
@@ -1238,12 +1405,14 @@ function handleJobRecord(job) {
     generateAiButton.disabled = true;
     reviseAiButton.disabled = true;
     executeButton.disabled = true;
+    cancelJobButton.hidden = false;
     showSpinner();
     updateStatus(job.progress || t("status_job_running"), "");
     return;
   }
   if (job.status === "succeeded") {
     hideSpinner();
+    cancelJobButton.hidden = true;
     generateAiButton.disabled = false;
     reviseAiButton.disabled = !loadedPlan;
     const result = job.result || {};
@@ -1261,6 +1430,7 @@ function handleJobRecord(job) {
   }
   if (job.status === "failed") {
     hideSpinner();
+    cancelJobButton.hidden = true;
     generateAiButton.disabled = false;
     reviseAiButton.disabled = !loadedPlan;
     executeButton.disabled = !loadedSummary || !loadedSummary.ok || loadedSummary.executableActions.length === 0;

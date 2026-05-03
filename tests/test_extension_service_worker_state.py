@@ -76,11 +76,8 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             summary: {{ overview: 'generated while popup is closed' }},
             activations: [{{
               op: 'move_bookmark',
-              node_kind: 'bookmark',
               node_id: '10',
-              destination_path: '/收藏夹栏/AI',
-              create_path: '',
-              new_title: '',
+              target: '/收藏夹栏/AI',
               duplicate_of_id: '',
               confidence: 0.91,
               reason: 'belongs with AI tools'
@@ -144,7 +141,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         global.fetch = async function (url) {{
           if (String(url).startsWith('chrome-extension://')) return {{ ok: false, json: async () => ({{}}), text: async () => '' }};
           await new Promise((resolve) => setTimeout(resolve, 20));
-          const payload = {{ summary: {{ overview: 'background job' }}, activations: [{{ op: 'move_bookmark', node_kind: 'bookmark', node_id: '10', destination_path: '/收藏夹栏/AI', create_path: '', new_title: '', duplicate_of_id: '', confidence: 0.91, reason: 'belongs with AI tools' }}] }};
+          const payload = {{ summary: {{ overview: 'background job' }}, activations: [{{ op: 'move_bookmark', node_id: '10', target: '/收藏夹栏/AI', duplicate_of_id: '', confidence: 0.91, reason: 'belongs with AI tools' }}] }};
           return {{ ok: true, text: async () => JSON.stringify({{ choices: [{{ text: JSON.stringify(payload) }}] }}) }};
         }};
         async function waitForFinalJob() {{
@@ -391,7 +388,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           status: 'proposed',
           reason: 'draft',
           confidence: 0.3,
-          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com', folder_path: '/收藏夹栏' }},
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }},
           to_path: '/收藏夹栏/AI'
         }}] }} }}, null, (response) => {{
           console.log(JSON.stringify({{ succeeded: response.succeeded.length, failures: response.failures.length, moveCalls }}));
@@ -433,7 +430,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           status: 'approved',
           reason: 'dedupe',
           confidence: 0.9,
-          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com', folder_path: '/收藏夹栏' }}
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }}
         }}] }} }}, null, (response) => {{
           console.log(JSON.stringify({{ failures: response.failures.length, error: response.failures[0].error, removeCalls }}));
         }});
@@ -450,7 +447,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
         const storage = {{}};
         let listener = null;
-        let removeCalls = [];
+        let moveCalls = [];
         global.importScripts = function (...files) {{
           for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
         }};
@@ -462,10 +459,12 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
           bookmarks: {{
-            get: (id, callback) => callback(id === '1' ? [{{ id: '1', title: '收藏夹栏', children: [] }}] : []),
+            get: (id, callback) => callback(id === '1' ? [{{ id: '1', title: '收藏夹栏', children: [] }}] : id === '99' ? [{{ id: '99', title: 'Example', url: 'https://example.com', parentId: '1' }}] : []),
             search: (_query, callback) => callback([{{ id: '99', title: 'Example', url: 'https://example.com', parentId: '1' }}]),
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '99', title: 'Example', url: 'https://example.com' }}] }}] }}]),
-            remove: (id, callback) => {{ removeCalls.push(id); if (callback) callback(); }}
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'q1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
           }}
         }};
         require(serviceWorkerPath);
@@ -475,15 +474,322 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           status: 'approved',
           reason: 'dedupe',
           confidence: 0.9,
-          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com', folder_path: '/收藏夹栏' }}
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }}
         }}] }} }}, null, (response) => {{
-          console.log(JSON.stringify({{ succeeded: response.succeeded.length, failures: response.failures.length, removeCalls }}));
+          console.log(JSON.stringify({{ succeeded: response.succeeded.length, failures: response.failures.length, moveCalls }}));
         }});
         """
         result = cast(dict[str, object], self._node_script(script))
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["failures"], 0)
-        self.assertEqual(result["removeCalls"], ["99"])
+        self.assertEqual(result["moveCalls"], [{"id": "99", "parentId": "q1"}])
+    def test_policy_blocks_action_outside_focus_path(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [] }}])
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', focusPath: '/收藏夹栏/AI', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'move_bookmark',
+          status: 'approved',
+          reason: 'move it',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }},
+          from_path: '/收藏夹栏',
+          to_path: '/收藏夹栏/AI'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            failures: response.failures.length,
+            error: response.failures[0].error
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["failures"], 1)
+        self.assertIn("outside focus scope", str(result["error"]))
+
+    def test_policy_allows_action_within_focus_path(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        const nodes = {{
+          '10': {{ id: '10', title: 'Example', url: 'https://example.com', parentId: '2' }},
+          '2': {{ id: '2', title: 'AI', parentId: '1' }},
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'AI', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', focusPath: '/收藏夹栏/AI', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'move_bookmark',
+          status: 'approved',
+          reason: 'move it',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏/AI' }},
+          from_path: '/收藏夹栏/AI',
+          to_path: '/收藏夹栏/AI/Tools'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{ succeeded: response.succeeded.length, failures: response.failures.length, moveCalls }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(len(result["moveCalls"]), 1)
+
+    def test_policy_allows_all_when_focus_path_is_empty(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        const nodes = {{
+          '10': {{ id: '10', title: 'Example', url: 'https://example.com', parentId: '1' }},
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'move_bookmark',
+          status: 'approved',
+          reason: 'move it',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }},
+          from_path: '/收藏夹栏',
+          to_path: '/收藏夹栏/AI'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{ succeeded: response.succeeded.length, failures: response.failures.length, moveCalls }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(len(result["moveCalls"]), 1)
+
+    def test_remove_duplicate_moves_to_quarantine_not_delete(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        let removeCalls = 0;
+        const nodes = {{
+          '10': {{ id: '10', title: 'Example', url: 'https://example.com', parentId: '1' }},
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ removeCalls += 1; if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'q1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'remove_duplicate',
+          status: 'approved',
+          reason: 'dedupe',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }}
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{ succeeded: response.succeeded.length, removeCalls, moveCalls }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["removeCalls"], 0)
+        self.assertEqual(result["moveCalls"], [{"id": "10", "parentId": "q1"}])
+
+    def test_undo_log_records_before_state_for_move(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        const nodes = {{
+          '10': {{ id: '10', title: 'Example', url: 'https://example.com', parentId: '1' }},
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (_id, _opts, callback) => {{ if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'move_bookmark',
+          status: 'approved',
+          reason: 'move it',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }},
+          from_path: '/收藏夹栏',
+          to_path: '/收藏夹栏/AI'
+        }}] }} }}, null, (response) => {{
+          const undoLog = storage.bookmarkAdvisorUndoLog || [];
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            logLength: undoLog.length,
+            beforeParentId: undoLog[0] && undoLog[0].before.parentId,
+            undoType: undoLog[0] && undoLog[0].undo_action.type,
+            undoParentId: undoLog[0] && undoLog[0].undo_action.parentId
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["logLength"], 1)
+        self.assertEqual(result["beforeParentId"], "1")
+        self.assertEqual(result["undoType"], "move")
+        self.assertEqual(result["undoParentId"], "1")
+
+    def test_undo_last_execution_reverses_move(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let undoMoveCalls = [];
+        const nodes = {{
+          '10': {{ id: '10', title: 'Example', url: 'https://example.com', parentId: '1' }},
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{ undoMoveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        new Promise((resolve) => {{
+          listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+            action_id: 'a-1',
+            action_type: 'move_bookmark',
+            status: 'approved',
+            reason: 'move it',
+            confidence: 0.9,
+            bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏',
+            to_path: '/收藏夹栏/AI'
+          }}] }} }}, null, () => resolve());
+        }}).then(() => new Promise((resolve) => {{
+          listener({{ type: 'undo-last-execution' }}, null, (response) => resolve(response));
+        }})).then((response) => {{
+          console.log(JSON.stringify({{
+            undone: response.undone,
+            count: response.count,
+            undoMoveCalls: undoMoveCalls.length,
+            restoredTo: undoMoveCalls[1] && undoMoveCalls[1].parentId
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["undone"], True)
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["undoMoveCalls"], 2)
+        self.assertEqual(result["restoredTo"], "1")
 
 
 if __name__ == "__main__":
