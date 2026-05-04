@@ -18,6 +18,44 @@ const UNDO_RENAME = "rename";
 const UNDO_DELETE_FOLDER = "delete_folder";
 let runningJobId = "";
 let _jobHeartbeatIntervalId = null;
+let _jobAbortController = null;
+
+function createJobAbortController() {
+  abortJobAbortController();
+  _jobAbortController = new AbortController();
+  return _jobAbortController;
+}
+
+function abortJobAbortController() {
+  if (_jobAbortController && !_jobAbortController.signal.aborted) {
+    _jobAbortController.abort();
+  }
+  return _jobAbortController;
+}
+
+function clearJobAbortController(controller = _jobAbortController) {
+  if (_jobAbortController && controller === _jobAbortController) {
+    _jobAbortController = null;
+  }
+}
+
+function clearRunningJobState(jobId, controller) {
+  if (runningJobId === jobId) {
+    runningJobId = "";
+  }
+  clearJobAbortController(controller);
+}
+
+function isAbortLikeError(error) {
+  if (!error) {
+    return false;
+  }
+  if (error.name === "AbortError") {
+    return true;
+  }
+  const message = error.message || String(error);
+  return /aborted|cancelled by user/i.test(message);
+}
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message) {
@@ -115,7 +153,7 @@ async function startBackgroundJob(jobType, payload) {
   runningJobId = "starting";
   let existingJob;
   try {
-    existingJob = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+    existingJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
   } catch (error) {
     runningJobId = "";
     throw error;
@@ -132,6 +170,7 @@ async function startBackgroundJob(jobType, payload) {
       throw error;
     }
   }
+  const jobAbortController = createJobAbortController();
   const job = {
     id: `job-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     type: jobType,
@@ -141,8 +180,9 @@ async function startBackgroundJob(jobType, payload) {
     updated_at: new Date().toISOString(),
   };
   runningJobId = job.id;
-  void saveActiveJob(job).then(() => runBackgroundJob(job, payload)).catch((error) => {
+  void saveActiveJob(job).then(() => runBackgroundJob(job, payload, jobAbortController)).catch((error) => {
     void failJob(job, error.message || String(error));
+    clearRunningJobState(job.id, jobAbortController);
   });
   return { job };
 }
@@ -153,7 +193,7 @@ async function runDirectMutatingOperation(jobType, callback) {
   }
   runningJobId = `direct-${jobType}-${Date.now()}`;
   try {
-    const existingJob = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+    const existingJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
     if (isFreshRunningJob(existingJob)) {
       throw new Error(`Background job already running: ${existingJob.type}`);
     }
@@ -166,7 +206,7 @@ async function runDirectMutatingOperation(jobType, callback) {
 }
 
 async function getActiveJobForPopup() {
-  const job = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  const job = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
   if (isStaleRunningJob(job)) {
     const failed = await failJob(job, "Background job timed out before completion.");
     return failed;
@@ -188,9 +228,11 @@ function isStaleRunningJob(job) {
 
 async function failJob(job, message) {
   stopJobHeartbeat();
-  const current = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
-  if (current && current.id === job.id && current.status !== "running") {
-    if (runningJobId === job.id) { runningJobId = ""; }
+  const current = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+  if (!current || current.id !== job.id) {
+    return current || null;
+  }
+  if (current.status !== "running") {
     return current;
   }
   const failed = {
@@ -201,34 +243,34 @@ async function failJob(job, message) {
     updated_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),
   };
-  if (runningJobId === job.id) {
-    runningJobId = "";
-  }
   await saveActiveJob(failed);
   return failed;
 }
 
 async function cancelActiveJob() {
+  abortJobAbortController();
   stopJobHeartbeat();
-  runningJobId = "";
+  const activeJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+  if (activeJob && activeJob.status === "running") {
+    await failJob(activeJob, "Cancelled by user.");
+  }
   await Promise.all([
-    chromeStorageSet(ACTIVE_JOB_STORAGE_NAME, null).catch(() => {}),
     chromeStorageSet("bookmarkAdvisorProgress", null).catch(() => {}),
   ]);
   return { cancelled: true };
 }
 
-async function runBackgroundJob(job, payload) {
+async function runBackgroundJob(job, payload, jobAbortController) {
   startJobHeartbeat(job);
   try {
     const onProgress = (message) => jobProgress(job, message);
     if (job.type === "generate-ai-plan") {
-      const result = await generateAiReviewedPlan(payload.options || {}, onProgress);
+      const result = await generateAiReviewedPlan({ ...(payload.options || {}), signal: jobAbortController.signal }, onProgress);
       await finishJob(job, result, "AI plan generated.");
       return;
     }
     if (job.type === "revise-ai-plan") {
-      const result = await reviseAiReviewedPlan(payload.plan, payload.options || {}, onProgress);
+      const result = await reviseAiReviewedPlan(payload.plan, { ...(payload.options || {}), signal: jobAbortController.signal }, onProgress);
       await finishJob(job, result, "AI plan revision complete.");
       return;
     }
@@ -236,17 +278,26 @@ async function runBackgroundJob(job, payload) {
       const result = await executeReviewedPlan(payload.plan, payload.focusPath || "", onProgress);
       await finishJob(job, result, "Execution complete.");
     }
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      await failJob(job, "Cancelled by user.");
+      return;
+    }
+    throw error;
   } finally {
     stopJobHeartbeat();
+    clearRunningJobState(job.id, jobAbortController);
   }
 }
 
 async function finishJob(job, result, progress) {
   stopJobHeartbeat();
-  const current = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
-  if (current && current.id === job.id && current.status !== "running") {
-    if (runningJobId === job.id) { runningJobId = ""; }
-    return;
+  const current = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+  if (!current || current.id !== job.id) {
+    return current || null;
+  }
+  if (current.status !== "running") {
+    return current;
   }
   await saveActiveJob({
     ...job,
@@ -256,13 +307,10 @@ async function finishJob(job, result, progress) {
     updated_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),
   });
-  if (runningJobId === job.id) {
-    runningJobId = "";
-  }
 }
 
 function saveActiveJob(job) {
-  return chromeStorageSet(ACTIVE_JOB_STORAGE_NAME, job);
+  return chromeStorageSet(globalThis.ACTIVE_JOB_STORAGE_NAME, job);
 }
 
 function startJobHeartbeat(job, intervalMs = 25000) {
@@ -285,7 +333,7 @@ function stopJobHeartbeat() {
 }
 
 async function jobHeartbeatTick(job) {
-  const current = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  const current = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
   if (!current || current.id !== job.id || current.status !== "running") {
     stopJobHeartbeat();
     return;
@@ -297,7 +345,7 @@ async function jobHeartbeatTick(job) {
 }
 
 function jobProgress(job, message) {
-  return chromeStorageGet(ACTIVE_JOB_STORAGE_NAME).then((current) => {
+  return chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME).then((current) => {
     if (!current || current.id !== job.id || current.status !== "running") {
       return;
     }

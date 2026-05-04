@@ -178,6 +178,113 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["resultActionType"], "move_bookmark")
         self.assertEqual(result["savedActionType"], "move_bookmark")
 
+    def test_cancel_active_job_aborts_inflight_ai_job_and_persists_cancelled_state(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let planningSignalAborted = false;
+        let planningFetchStarted = false;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
+        }};
+        global.fetch = async function (url, options) {{
+          if (String(url).includes('fast_rules.json')) {{
+            return {{
+              ok: true,
+              json: async () => ({{
+                defaults: {{ protect_root_loose_bookmarks: true, allow_new_folders_in_advise: true }},
+                protected_paths: ['/收藏夹栏', '/其他收藏夹', '/移动收藏夹', '/工作区'],
+                category_hints: {{}},
+                folder_relocations: [],
+                bookmark_relocations: []
+              }})
+            }};
+          }}
+          if (!options.signal) {{
+            throw new Error('missing signal');
+          }}
+          planningFetchStarted = true;
+          options.signal.addEventListener('abort', () => {{ planningSignalAborted = true; }}, {{ once: true }});
+          return await new Promise((resolve, reject) => {{
+            if (options.signal.aborted) {{
+              const error = new Error('aborted by test');
+              error.name = 'AbortError';
+              reject(error);
+              return;
+            }}
+            const timeoutId = setTimeout(() => reject(new Error('did not abort')), 250);
+            options.signal.addEventListener('abort', () => {{
+              clearTimeout(timeoutId);
+              const error = new Error('aborted by test');
+              error.name = 'AbortError';
+              reject(error);
+            }}, {{ once: true }});
+          }});
+        }};
+        function waitFor(predicate, deadlineMs = 1000) {{
+          const deadline = Date.now() + deadlineMs;
+          return new Promise((resolve, reject) => {{
+            function tick() {{
+              if (predicate()) {{
+                resolve();
+                return;
+              }}
+              if (Date.now() > deadline) {{
+                reject(new Error('timed out waiting for condition'));
+                return;
+              }}
+              setTimeout(tick, 5);
+            }}
+            tick();
+          }});
+        }}
+        require(serviceWorkerPath);
+        new Promise((resolve, reject) => {{
+          listener({{ type: 'start-background-job', job_type: 'generate-ai-plan', payload: {{ options: {{ apiKey: 'test-key', apiBaseUrl: 'https://api.example.com/v1/completions', apiStyle: 'completions', model: 'test-model' }} }} }}, null, (response) => response && response.error ? reject(new Error(response.error)) : resolve(response));
+        }}).then((response) => {{
+          return waitFor(() => planningFetchStarted).then(() => response);
+        }}).then((response) => {{
+          return new Promise((resolve, reject) => {{
+            listener({{ type: 'cancel-active-job' }}, null, (cancelResponse) => cancelResponse && cancelResponse.error ? reject(new Error(cancelResponse.error)) : resolve({{ response, cancelResponse }}));
+          }});
+        }}).then((pair) => {{
+          return waitFor(() => storage.bookmarkAdvisorActiveJob && storage.bookmarkAdvisorActiveJob.status !== 'running').then(() => pair);
+        }}).then((pair) => {{
+          console.log(JSON.stringify({{
+            startedStatus: pair.response.job.status,
+            cancelResponse: pair.cancelResponse,
+            finalStatus: storage.bookmarkAdvisorActiveJob.status,
+            finalProgress: storage.bookmarkAdvisorActiveJob.progress,
+            finalError: storage.bookmarkAdvisorActiveJob.error,
+            planningSignalAborted,
+            progressCleared: storage.bookmarkAdvisorProgress === null
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["startedStatus"], "running")
+        self.assertEqual(result["cancelResponse"], {"cancelled": True})
+        self.assertEqual(result["finalStatus"], "failed")
+        self.assertEqual(result["finalProgress"], "Cancelled by user.")
+        self.assertEqual(result["finalError"], "Cancelled by user.")
+        self.assertEqual(result["planningSignalAborted"], True)
+        self.assertEqual(result["progressCleared"], True)
+
     def test_background_job_ack_uses_async_storage_lock_before_executor(self):
         script = f"""
         const path = require('path');
@@ -573,7 +680,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         result = cast(dict[str, object], self._node_script(script))
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["failures"], 0)
-        self.assertEqual(len(result["moveCalls"]), 1)
+        self.assertEqual(len(cast(list[object], result["moveCalls"])), 1)
 
     def test_policy_allows_all_when_focus_path_is_empty(self):
         script = f"""
@@ -622,7 +729,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         result = cast(dict[str, object], self._node_script(script))
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["failures"], 0)
-        self.assertEqual(len(result["moveCalls"]), 1)
+        self.assertEqual(len(cast(list[object], result["moveCalls"])), 1)
 
     def test_remove_duplicate_moves_to_quarantine_not_delete(self):
         script = f"""
