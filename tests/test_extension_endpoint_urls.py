@@ -266,6 +266,83 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["blocked"], 1)
 
+    def test_external_abort_signal_cancels_inflight_plan_request(self):
+        body = """
+        const controller = new AbortController();
+        const urls = [];
+        global.fetch = async function (url, options) {
+          urls.push(url);
+          if (String(url).includes('fast_rules.json')) {
+            return {
+              ok: true,
+              json: async () => ({
+                defaults: { protect_root_loose_bookmarks: true, allow_new_folders_in_advise: true },
+                protected_paths: ['/收藏夹栏', '/其他收藏夹', '/移动收藏夹', '/工作区'],
+                category_hints: {},
+                folder_relocations: [],
+                bookmark_relocations: []
+              })
+            };
+          }
+          return await new Promise((resolve, reject) => {
+            const abortError = function () {
+              const error = new Error('aborted by test');
+              error.name = 'AbortError';
+              reject(error);
+            };
+            if (!options.signal) {
+              reject(new Error('missing signal'));
+              return;
+            }
+            if (options.signal.aborted) {
+              abortError();
+              return;
+            }
+            setTimeout(() => controller.abort(), 0);
+            const timeoutId = setTimeout(() => reject(new Error('did not abort')), 250);
+            options.signal.addEventListener('abort', () => {
+              clearTimeout(timeoutId);
+              abortError();
+            }, { once: true });
+          });
+        };
+        const plan = BookmarkAdvisorAI.generateReviewedPlan({
+          apiKey: 'test-key',
+          apiBaseUrl: 'https://api.example.com/v1/completions',
+          apiStyle: 'completions',
+          model: 'test-model',
+          requestTimeoutMs: 10000,
+          snapshot: {
+            created_at: 'now',
+            folders: [],
+            bookmarks: [{
+              id: '10',
+              title: 'Example',
+              url: 'https://example.com',
+              normalized_url: 'https://example.com',
+              folder_path: '/收藏夹栏/Loose'
+            }]
+          },
+          signal: controller.signal
+        });
+        plan.then(() => {
+          console.error('expected abort');
+          process.exit(1);
+        }).catch((error) => {
+          console.log(JSON.stringify({
+            name: error && error.name,
+            message: error && error.message,
+            callCount: urls.length,
+            hasPlanningCall: urls.some((url) => !String(url).includes('fast_rules.json'))
+          }));
+        });
+        """
+        result = cast(dict[str, object], self._node_script(body))
+        self.assertEqual(result["name"], "AbortError")
+        self.assertEqual(result["message"], "The operation was aborted.")
+        self.assertEqual(result["hasPlanningCall"], True)
+        self.assertEqual(cast(int, result["callCount"]), 1)
+
     def test_activation_lint_rejects_focus_path_escape(self):
         expression = """
         BookmarkAdvisorAI._lintActivationPayload(

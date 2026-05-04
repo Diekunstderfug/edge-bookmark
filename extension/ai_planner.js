@@ -64,6 +64,9 @@
   }
 
   async function generateReviewedPlan(options) {
+    if (options.signal && options.signal.aborted) {
+      throw createAbortError("The operation was aborted.");
+    }
     await loadFastRules();
     const apiKey = String(options.apiKey || "").trim();
     if (!apiKey) {
@@ -84,6 +87,7 @@
     const focusPath = String(options.focusPath || "").trim();
     const userInstruction = String(options.userInstruction || "").trim();
     const onProgress = typeof options.onProgress === "function" ? options.onProgress : function () {};
+    const signal = options.signal;
     const planningSnapshot = buildPlanningSnapshot(snapshot, focusPath);
     const preferences = options.preferences || {};
     const activationPayload = await requestDraftPlan({
@@ -99,6 +103,7 @@
       userInstruction,
       preferences,
       onProgress,
+      signal,
     });
     const draft = compileActivationPlan(activationPayload, planningSnapshot);
     const reviewedPlan = finalizeDraftPlan({
@@ -119,6 +124,9 @@
   }
 
   async function reviseReviewedPlan(options) {
+    if (options.signal && options.signal.aborted) {
+      throw createAbortError("The operation was aborted.");
+    }
     await loadFastRules();
     const apiKey = String(options.apiKey || "").trim();
     if (!apiKey) {
@@ -145,6 +153,7 @@
       throw new Error("Describe how to revise the loaded plan before calling the LLM.");
     }
     const onProgress = typeof options.onProgress === "function" ? options.onProgress : function () {};
+    const signal = options.signal;
     const planningSnapshot = buildPlanningSnapshot(snapshot, focusPath);
     const preferences = options.preferences || {};
     const activationPayload = await requestRevisionPlan({
@@ -160,6 +169,7 @@
       userInstruction,
       preferences,
       onProgress,
+      signal,
     });
     const draft = compileActivationPlan(activationPayload, planningSnapshot);
     const reviewedPlan = finalizeDraftPlan({
@@ -184,7 +194,7 @@
     };
   }
 
-  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, focusPath, userInstruction, preferences, onProgress }) {
+  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, focusPath, userInstruction, preferences, onProgress, signal }) {
     const systemText = buildSystemPrompt(maxActions, preferences);
     const userText = buildUserPrompt(snapshot, focusPath, userInstruction, preferences);
     const schema = activationResponseSchema();
@@ -200,11 +210,12 @@
       userText,
       snapshot,
       onProgress,
+      signal,
       progressLabel: "planning",
     });
   }
 
-  async function requestRevisionPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, existingPlan, userInstruction, preferences, onProgress }) {
+  async function requestRevisionPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, existingPlan, userInstruction, preferences, onProgress, signal }) {
     const systemText = buildSystemPrompt(maxActions, preferences);
     const userText = buildRevisionUserPrompt(existingPlan, snapshot, userInstruction, preferences);
     const schema = activationResponseSchema();
@@ -220,11 +231,12 @@
       userText,
       snapshot,
       onProgress,
+      signal,
       progressLabel: "plan revision",
     });
   }
 
-  async function requestLintedActivationPlan({ apiKey, apiBaseUrl, apiStyle, model, requestTimeoutMs, maxRetries, schema, systemText, userText, snapshot, onProgress, progressLabel }) {
+  async function requestLintedActivationPlan({ apiKey, apiBaseUrl, apiStyle, model, requestTimeoutMs, maxRetries, schema, systemText, userText, snapshot, onProgress, signal, progressLabel }) {
     const maxAttempts = Math.max(1, (Number.isFinite(maxRetries) ? maxRetries : DEFAULT_MAX_RETRIES) + 1);
     let retryFeedback = "";
     const errors = [];
@@ -242,6 +254,7 @@
             schema,
             systemText,
             userText: userText + retryFeedback,
+            signal,
           });
           await onProgress("Parsing and linting activation response...");
           const activationPayload = parseDraftPlanText(extractAttemptText(attempt, payload));
@@ -254,6 +267,9 @@
           await onProgress(`Activation lint failed (${lintErrors.length} issue(s)). Retrying...`);
           break;
         } catch (error) {
+          if (error && error.name === "AbortError") {
+            throw error;
+          }
           errors.push(`${attempt}: ${error.message || String(error)}`);
           await onProgress(`LLM attempt failed (${attemptLabel(attempt)}). Trying fallback...`);
         }
@@ -290,7 +306,7 @@
     return "Chat plain JSON";
   }
 
-  async function requestCompatibleAttempt({ attempt, apiBaseUrl, apiKey, model, requestTimeoutMs, schema, systemText, userText }) {
+  async function requestCompatibleAttempt({ attempt, apiBaseUrl, apiKey, model, requestTimeoutMs, schema, systemText, userText, signal }) {
     if (attempt === "responses_json_schema") {
       return postCompatible(endpointUrl(apiBaseUrl, "responses"), apiKey, requestTimeoutMs, {
         model,
@@ -312,7 +328,7 @@
             schema,
           },
         },
-      });
+      }, signal);
     }
 
     if (attempt === "completions_plain_json") {
@@ -321,7 +337,7 @@
         prompt: `${systemText}\nReturn a single JSON object and no Markdown fences.\n\n${userText}`,
         max_tokens: 16384,
         temperature: 0,
-      });
+      }, signal);
     }
 
     const chatPayload = {
@@ -340,7 +356,7 @@
     } else if (attempt === "chat_json_object") {
       chatPayload.response_format = { type: "json_object" };
     }
-    return postCompatible(endpointUrl(apiBaseUrl, "chat/completions"), apiKey, requestTimeoutMs, chatPayload);
+    return postCompatible(endpointUrl(apiBaseUrl, "chat/completions"), apiKey, requestTimeoutMs, chatPayload, signal);
   }
 
   function buildRequestAttempts(apiStyle, apiBaseUrl) {
@@ -378,10 +394,32 @@
     return messages;
   }
 
-  async function postCompatible(url, apiKey, timeoutMs, body) {
+  function createAbortError(message) {
+    const error = new Error(message || "The operation was aborted.");
+    error.name = "AbortError";
+    error.code = 20;
+    return error;
+  }
+
+  async function postCompatible(url, apiKey, timeoutMs, body, externalSignal) {
     const effectiveTimeout = timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
+    let timedOut = false;
+    let externalAborted = false;
+    const onExternalAbort = function () {
+      externalAborted = true;
+      controller.abort();
+    };
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        throw createAbortError("The operation was aborted.");
+      }
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, effectiveTimeout);
     let response;
     try {
       response = await fetch(url, {
@@ -395,8 +433,14 @@
       });
     } catch (error) {
       clearTimeout(timeoutId);
-      if (error && error.name === "AbortError") {
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
+      if (timedOut || (error && error.name === "AbortError" && !externalAborted && !externalSignal?.aborted)) {
         throw new Error(`Request timed out after ${Math.round(effectiveTimeout / 1000)}s: ${url}`);
+      }
+      if (externalAborted || externalSignal?.aborted) {
+        throw createAbortError("The operation was aborted.");
       }
       throw error;
     }
@@ -412,10 +456,22 @@
     } catch (error) {
       clearTimeout(timeoutId);
       clearTimeout(bodyTimeoutId);
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
+      if (timedOut) {
+        throw new Error(`Request timed out after ${Math.round(effectiveTimeout / 1000)}s: ${url}`);
+      }
+      if (externalAborted || externalSignal?.aborted) {
+        throw createAbortError("The operation was aborted.");
+      }
       throw error;
     }
     clearTimeout(timeoutId);
     clearTimeout(bodyTimeoutId);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", onExternalAbort);
+    }
     let payload = null;
     try {
       payload = text ? JSON.parse(text) : {};
