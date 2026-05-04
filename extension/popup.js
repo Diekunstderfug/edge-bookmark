@@ -55,6 +55,7 @@ const STRINGS = {
     btn_cancel_job: "Force Stop",
     status_cancelling: "Cancelling...",
     status_cancelled: "Job cancelled. State reset.",
+    error_sw_terminated: "Background task lost connection. The service worker was likely terminated. Click Force Stop to reset.",
     error_need_api_base_url: "Set an HTTPS OpenAI-compatible API base URL in LLM Settings.",
     error_need_model: "Set a model name in LLM Settings.",
     error_need_api_key: "Paste an API key in LLM Settings, or save one encrypted locally first.",
@@ -158,6 +159,7 @@ const STRINGS = {
     btn_cancel_job: "\u5f3a\u5236\u7ec8\u6b62",
     status_cancelling: "\u6b63\u5728\u7ec8\u6b62...",
     status_cancelled: "\u5df2\u7ec8\u6b62\uff0c\u72b6\u6001\u5df2\u91cd\u7f6e\u3002",
+    error_sw_terminated: "\u540e\u53f0\u4efb\u52a1\u8fde\u63a5\u4e22\u5931\uff0cService Worker \u53ef\u80fd\u5df2\u88ab\u7ec8\u6b62\u3002\u70b9\u51fb\u5f3a\u5236\u7ec8\u6b62\u91cd\u7f6e\u3002",
     error_need_api_base_url: "请先在模型设置里填写 HTTPS API 地址。",
     error_need_model: "请先在模型设置里填写模型名称。",
     error_need_api_key: "请先在模型设置里填写或保存 API 密钥。",
@@ -236,6 +238,8 @@ const LLM_SETTINGS_STORAGE_NAME = "bookmarkAdvisorLlmSettings";
 const UI_DRAFT_STORAGE_NAME = "bookmarkAdvisorPopupDraft";
 const PREFERENCES_STORAGE_NAME = "bookmarkAdvisorPreferences";
 const RUNTIME_MESSAGE_TIMEOUT_MS = 240000;
+const JOB_STALENESS_CHECK_INTERVAL_MS = 30000;
+const JOB_STALENESS_THRESHOLD_MS = 60000;
 const DEFAULT_LLM_SETTINGS = {
   apiBaseUrl: "https://api.openai.com/v1",
   apiStyle: "auto",
@@ -300,6 +304,7 @@ let restoringInputs = false;
 let cacheWriteInFlight = false;
 let cacheWriteQueued = false;
 let activeBackgroundJob = null;
+let _stalenessCheckIntervalId = null;
 let _pendingFocusPath = "";
 
 function showSpinner() { spinnerEl.hidden = false; }
@@ -664,6 +669,7 @@ cancelJobButton.addEventListener("click", async () => {
   try {
     chrome.storage.local.remove([ACTIVE_JOB_STORAGE_NAME, "bookmarkAdvisorProgress"]);
   } catch (_e) { /* ignore */ }
+  stopJobStalenessCheck();
   activeBackgroundJob = null;
   hideSpinner();
   generateAiButton.disabled = false;
@@ -781,11 +787,13 @@ function attachInputCacheHandlers() {
     });
   }
   window.addEventListener("pagehide", () => {
+    stopJobStalenessCheck();
     persistUiDraftSnapshotNow();
     requestInputCacheWrite();
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
+      stopJobStalenessCheck();
       persistUiDraftSnapshotNow();
       requestInputCacheWrite();
     }
@@ -1413,9 +1421,11 @@ function handleBackgroundJobStorageChange(changes, areaName) {
 function handleJobRecord(job) {
   activeBackgroundJob = job || null;
   if (!job) {
+    stopJobStalenessCheck();
     return;
   }
   if (job.status === "running") {
+    startJobStalenessCheck();
     generateAiButton.disabled = true;
     reviseAiButton.disabled = true;
     executeButton.disabled = true;
@@ -1425,6 +1435,7 @@ function handleJobRecord(job) {
     return;
   }
   if (job.status === "succeeded") {
+    stopJobStalenessCheck();
     hideSpinner();
     cancelJobButton.hidden = true;
     generateAiButton.disabled = false;
@@ -1443,8 +1454,9 @@ function handleJobRecord(job) {
     return;
   }
   if (job.status === "failed") {
+    stopJobStalenessCheck();
     hideSpinner();
-    cancelJobButton.hidden = true;
+    cancelJobButton.hidden = !job.recoverable;
     generateAiButton.disabled = false;
     reviseAiButton.disabled = !loadedPlan;
     executeButton.disabled = !loadedSummary || !loadedSummary.ok || loadedSummary.executableActions.length === 0;
@@ -1454,6 +1466,59 @@ function handleJobRecord(job) {
 
 function isActiveJobRunning() {
   return !!activeBackgroundJob && activeBackgroundJob.status === "running";
+}
+
+function startJobStalenessCheck() {
+  if (_stalenessCheckIntervalId !== null) {
+    return;
+  }
+  _stalenessCheckIntervalId = setInterval(() => {
+    void checkJobStaleness();
+  }, JOB_STALENESS_CHECK_INTERVAL_MS);
+  void checkJobStaleness();
+}
+
+function stopJobStalenessCheck() {
+  if (_stalenessCheckIntervalId !== null) {
+    clearInterval(_stalenessCheckIntervalId);
+    _stalenessCheckIntervalId = null;
+  }
+}
+
+async function checkJobStaleness() {
+  if (!isActiveJobRunning()) {
+    stopJobStalenessCheck();
+    return;
+  }
+  let storedJob;
+  try {
+    storedJob = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  } catch (_error) {
+    return;
+  }
+  if (!isActiveJobRunning()) {
+    stopJobStalenessCheck();
+    return;
+  }
+  if (!storedJob || storedJob.status !== "running") {
+    stopJobStalenessCheck();
+    return;
+  }
+  const timestamps = [storedJob.updated_at, storedJob.started_at]
+    .map((value) => Date.parse(value))
+    .filter((value) => Number.isFinite(value));
+  if (timestamps.length === 0 || Date.now() - Math.max(...timestamps) > JOB_STALENESS_THRESHOLD_MS) {
+    const now = new Date().toISOString();
+    handleJobRecord({
+      ...storedJob,
+      status: "failed",
+      recoverable: true,
+      error: t("error_sw_terminated"),
+      progress: t("error_sw_terminated"),
+      updated_at: now,
+      finished_at: now,
+    });
+  }
 }
 
 function downloadJson(payload, filename) {
