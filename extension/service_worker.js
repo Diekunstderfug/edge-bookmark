@@ -1,6 +1,8 @@
 importScripts("ai_planner.js");
 importScripts("storage_helpers.js");
 
+/* global ACTIVE_JOB_STORAGE_NAME, UNDO_LOG_STORAGE_NAME, BookmarkAdvisorAI, chromeStorageGet, chromeStorageSet, saveLastPlan, saveLastReport, pathWithinScope */
+
 const EXECUTION_ORDER = [
   "rename_folder",
   "create_folder",
@@ -15,6 +17,7 @@ const UNDO_MOVE = "move";
 const UNDO_RENAME = "rename";
 const UNDO_DELETE_FOLDER = "delete_folder";
 let runningJobId = "";
+let _jobHeartbeatIntervalId = null;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message) {
@@ -184,6 +187,7 @@ function isStaleRunningJob(job) {
 }
 
 async function failJob(job, message) {
+  stopJobHeartbeat();
   const current = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
   if (current && current.id === job.id && current.status !== "running") {
     if (runningJobId === job.id) { runningJobId = ""; }
@@ -205,6 +209,7 @@ async function failJob(job, message) {
 }
 
 async function cancelActiveJob() {
+  stopJobHeartbeat();
   runningJobId = "";
   await Promise.all([
     chromeStorageSet(ACTIVE_JOB_STORAGE_NAME, null).catch(() => {}),
@@ -214,24 +219,30 @@ async function cancelActiveJob() {
 }
 
 async function runBackgroundJob(job, payload) {
-  const onProgress = (message) => jobProgress(job, message);
-  if (job.type === "generate-ai-plan") {
-    const result = await generateAiReviewedPlan(payload.options || {}, onProgress);
-    await finishJob(job, result, "AI plan generated.");
-    return;
-  }
-  if (job.type === "revise-ai-plan") {
-    const result = await reviseAiReviewedPlan(payload.plan, payload.options || {}, onProgress);
-    await finishJob(job, result, "AI plan revision complete.");
-    return;
-  }
-  if (job.type === "apply-reviewed-plan") {
-    const result = await executeReviewedPlan(payload.plan, payload.focusPath || "", onProgress);
-    await finishJob(job, result, "Execution complete.");
+  startJobHeartbeat(job);
+  try {
+    const onProgress = (message) => jobProgress(job, message);
+    if (job.type === "generate-ai-plan") {
+      const result = await generateAiReviewedPlan(payload.options || {}, onProgress);
+      await finishJob(job, result, "AI plan generated.");
+      return;
+    }
+    if (job.type === "revise-ai-plan") {
+      const result = await reviseAiReviewedPlan(payload.plan, payload.options || {}, onProgress);
+      await finishJob(job, result, "AI plan revision complete.");
+      return;
+    }
+    if (job.type === "apply-reviewed-plan") {
+      const result = await executeReviewedPlan(payload.plan, payload.focusPath || "", onProgress);
+      await finishJob(job, result, "Execution complete.");
+    }
+  } finally {
+    stopJobHeartbeat();
   }
 }
 
 async function finishJob(job, result, progress) {
+  stopJobHeartbeat();
   const current = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
   if (current && current.id === job.id && current.status !== "running") {
     if (runningJobId === job.id) { runningJobId = ""; }
@@ -252,6 +263,37 @@ async function finishJob(job, result, progress) {
 
 function saveActiveJob(job) {
   return chromeStorageSet(ACTIVE_JOB_STORAGE_NAME, job);
+}
+
+function startJobHeartbeat(job, intervalMs = 25000) {
+  stopJobHeartbeat();
+  if (!job || !job.id) {
+    return;
+  }
+  _jobHeartbeatIntervalId = setInterval(() => {
+    void jobHeartbeatTick(job).catch(() => {
+      stopJobHeartbeat();
+    });
+  }, intervalMs);
+}
+
+function stopJobHeartbeat() {
+  if (_jobHeartbeatIntervalId !== null) {
+    clearInterval(_jobHeartbeatIntervalId);
+    _jobHeartbeatIntervalId = null;
+  }
+}
+
+async function jobHeartbeatTick(job) {
+  const current = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
+  if (!current || current.id !== job.id || current.status !== "running") {
+    stopJobHeartbeat();
+    return;
+  }
+  await saveActiveJob({
+    ...current,
+    updated_at: new Date().toISOString(),
+  });
 }
 
 function jobProgress(job, message) {
