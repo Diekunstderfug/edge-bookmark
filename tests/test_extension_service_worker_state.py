@@ -285,6 +285,115 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["planningSignalAborted"], True)
         self.assertEqual(result["progressCleared"], True)
 
+    def test_cancel_requested_stops_reviewed_plan_before_remaining_actions(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        let firstMovePending = true;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback({{
+              '10': [{{ id: '10', title: 'Example 1', url: 'https://example.com', parentId: '1' }}],
+              '11': [{{ id: '11', title: 'Example 2', url: 'https://example.com', parentId: '1' }}],
+              '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}]
+            }}[id] || []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example 1', url: 'https://example.com' }}, {{ id: '11', title: 'Example 2', url: 'https://example.com' }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{
+              moveCalls.push({{ id, parentId: opts.parentId }});
+              if (firstMovePending) {{
+                firstMovePending = false;
+                setTimeout(() => {{ if (callback) callback(); }}, 30);
+                return;
+              }}
+              if (callback) callback();
+            }}
+          }}
+        }};
+        function waitFor(predicate, deadlineMs = 1000) {{
+          const deadline = Date.now() + deadlineMs;
+          return new Promise((resolve, reject) => {{
+            function tick() {{
+              if (predicate()) {{
+                resolve();
+                return;
+              }}
+              if (Date.now() > deadline) {{
+                reject(new Error('timed out waiting for condition'));
+                return;
+              }}
+              setTimeout(tick, 5);
+            }}
+            tick();
+          }});
+        }}
+        require(serviceWorkerPath);
+        new Promise((resolve, reject) => {{
+          listener({{ type: 'start-background-job', job_type: 'apply-reviewed-plan', payload: {{ plan: {{ actions: [{{
+            action_id: 'a-1',
+            action_type: 'move_bookmark',
+            status: 'approved',
+            reason: 'move one',
+            confidence: 0.9,
+            bookmark_locator: {{ id: '10', title: 'Example 1', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏',
+            to_path: '/收藏夹栏/AI'
+          }}, {{
+            action_id: 'a-2',
+            action_type: 'move_bookmark',
+            status: 'approved',
+            reason: 'move two',
+            confidence: 0.9,
+            bookmark_locator: {{ id: '11', title: 'Example 2', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏',
+            to_path: '/收藏夹栏/AI'
+          }}] }} }} }}, null, (response) => response && response.error ? reject(new Error(response.error)) : resolve(response));
+        }}).then((response) => {{
+          return waitFor(() => moveCalls.length === 1).then(() => response);
+        }}).then((response) => {{
+          return new Promise((resolve, reject) => {{
+            listener({{ type: 'cancel-active-job' }}, null, (cancelResponse) => cancelResponse && cancelResponse.error ? reject(new Error(cancelResponse.error)) : resolve({{ response, cancelResponse }}));
+          }});
+        }}).then((pair) => {{
+          return waitFor(() => storage.bookmarkAdvisorActiveJob && storage.bookmarkAdvisorActiveJob.status !== 'running').then(() => pair);
+        }}).then((pair) => {{
+          console.log(JSON.stringify({{
+            startedStatus: pair.response.job.status,
+            cancelResponse: pair.cancelResponse,
+            finalStatus: storage.bookmarkAdvisorActiveJob.status,
+            finalProgress: storage.bookmarkAdvisorActiveJob.progress,
+            finalError: storage.bookmarkAdvisorActiveJob.error,
+            cancellationRequestedAt: storage.bookmarkAdvisorActiveJob.cancellation_requested_at,
+            moveCalls
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["startedStatus"], "running")
+        self.assertEqual(result["cancelResponse"], {"cancelled": True})
+        self.assertEqual(result["finalStatus"], "failed")
+        self.assertEqual(result["finalProgress"], "Cancelled by user.")
+        self.assertEqual(result["finalError"], "Cancelled by user.")
+        self.assertTrue(str(result["cancellationRequestedAt"]))
+        self.assertEqual(len(cast(list[object], result["moveCalls"])), 1)
+
     def test_background_job_ack_uses_async_storage_lock_before_executor(self):
         script = f"""
         const path = require('path');

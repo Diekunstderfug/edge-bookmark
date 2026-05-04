@@ -235,9 +235,13 @@ async function failJob(job, message) {
   if (current.status !== "running") {
     return current;
   }
+  const cancellationRequestedAt = message === "Cancelled by user."
+    ? job.cancellation_requested_at || current.cancellation_requested_at || new Date().toISOString()
+    : job.cancellation_requested_at || current.cancellation_requested_at || "";
   const failed = {
     ...job,
     status: "failed",
+    ...(cancellationRequestedAt ? { cancellation_requested_at: cancellationRequestedAt } : {}),
     progress: message,
     error: message,
     updated_at: new Date().toISOString(),
@@ -252,7 +256,7 @@ async function cancelActiveJob() {
   stopJobHeartbeat();
   const activeJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
   if (activeJob && activeJob.status === "running") {
-    await failJob(activeJob, "Cancelled by user.");
+    await failJob({ ...activeJob, cancellation_requested_at: new Date().toISOString() }, "Cancelled by user.");
   }
   await Promise.all([
     chromeStorageSet("bookmarkAdvisorProgress", null).catch(() => {}),
@@ -275,7 +279,7 @@ async function runBackgroundJob(job, payload, jobAbortController) {
       return;
     }
     if (job.type === "apply-reviewed-plan") {
-      const result = await executeReviewedPlan(payload.plan, payload.focusPath || "", onProgress);
+      const result = await executeReviewedPlan(payload.plan, payload.focusPath || "", onProgress, { id: job.id });
       await finishJob(job, result, "Execution complete.");
     }
   } catch (error) {
@@ -394,7 +398,7 @@ async function reviseAiReviewedPlan(plan, options, onProgress = reportProgress) 
   return result;
 }
 
-async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress) {
+async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress, jobContext = null) {
   validateExecutablePlan(plan);
 
   const executionId = `exec-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -416,10 +420,12 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress)
     (sum, actionType) => sum + grouped.get(actionType).length, 0,
   );
 
+  await assertJobNotCancelled(jobContext);
   await onProgress("Starting plan execution...");
 
   for (const actionType of EXECUTION_ORDER) {
     for (const action of grouped.get(actionType)) {
+      await assertJobNotCancelled(jobContext);
       try {
         await applyAction(action, focusPath, executionId);
         succeeded.push({
@@ -439,6 +445,7 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress)
         });
       }
       await onProgress(`Executing action ${succeeded.length + failures.length}/${totalActions}...`);
+      await assertJobNotCancelled(jobContext);
     }
   }
 
@@ -452,6 +459,35 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress)
   await saveLastReport(report);
   await onProgress("Execution report saved for popup restore.");
   return report;
+}
+
+function createCancelledByUserError() {
+  const error = new Error("Cancelled by user.");
+  error.name = "AbortError";
+  return error;
+}
+
+async function assertJobNotCancelled(jobContext) {
+  if (!jobContext || !jobContext.id) {
+    return;
+  }
+  if (await isJobCancellationRequested(jobContext.id)) {
+    throw createCancelledByUserError();
+  }
+}
+
+async function isJobCancellationRequested(jobId) {
+  if (!jobId) {
+    return false;
+  }
+  const current = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+  if (!current || current.id !== jobId) {
+    return true;
+  }
+  if (current.cancellation_requested_at) {
+    return true;
+  }
+  return current.status !== "running";
 }
 
 async function exportCurrentSnapshot() {
