@@ -285,6 +285,80 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["planningSignalAborted"], True)
         self.assertEqual(result["progressCleared"], True)
 
+    def test_startup_cleanup_fails_stale_running_job_on_load(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{ bookmarkAdvisorActiveJob: {{ id: 'job-stale', type: 'generate-ai-plan', status: 'running', started_at: new Date().toISOString(), updated_at: 'not-a-date' }} }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: () => {{}} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: () => {{ throw new Error('startup cleanup should not touch bookmarks'); }} }}
+        }};
+        require(serviceWorkerPath);
+        setTimeout(() => {{
+          console.log(JSON.stringify({{
+            status: storage.bookmarkAdvisorActiveJob.status,
+            progress: storage.bookmarkAdvisorActiveJob.progress,
+            error: storage.bookmarkAdvisorActiveJob.error,
+            startedAt: storage.bookmarkAdvisorActiveJob.started_at,
+            finishedAt: storage.bookmarkAdvisorActiveJob.finished_at
+          }}));
+        }}, 25);
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["progress"], "Service worker restarted. Background job was interrupted.")
+        self.assertEqual(result["error"], "Service worker restarted. Background job was interrupted.")
+        self.assertTrue(str(result["startedAt"]))
+        self.assertTrue(str(result["finishedAt"]))
+
+    def test_startup_cleanup_leaves_fresh_running_job_untouched(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const staleStartedAt = new Date(Date.now() - 120000).toISOString();
+        const freshUpdatedAt = new Date().toISOString();
+        const storage = {{ bookmarkAdvisorActiveJob: {{ id: 'job-fresh', type: 'generate-ai-plan', status: 'running', started_at: staleStartedAt, updated_at: freshUpdatedAt }} }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: () => {{}} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: () => {{ throw new Error('startup cleanup should not touch bookmarks'); }} }}
+        }};
+        require(serviceWorkerPath);
+        setTimeout(() => {{
+          console.log(JSON.stringify({{
+            status: storage.bookmarkAdvisorActiveJob.status,
+            progress: storage.bookmarkAdvisorActiveJob.progress,
+            error: storage.bookmarkAdvisorActiveJob.error,
+            startedAt: storage.bookmarkAdvisorActiveJob.started_at,
+            updatedAt: storage.bookmarkAdvisorActiveJob.updated_at
+          }}));
+        }}, 25);
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["status"], "running")
+        self.assertNotEqual(result.get("progress"), "Service worker restarted. Background job was interrupted.")
+        self.assertIsNone(result.get("error"))
+        self.assertTrue(str(result["startedAt"]))
+        self.assertTrue(str(result["updatedAt"]))
+
     def test_cancel_requested_stops_reviewed_plan_before_remaining_actions(self):
         script = f"""
         const path = require('path');

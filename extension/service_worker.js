@@ -12,6 +12,7 @@ const EXECUTION_ORDER = [
 ];
 const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
 const ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
+const STARTUP_JOB_STALE_MS = 60 * 1000;
 const QUARANTINE_FOLDER_PATH = "/收藏夹栏/_Quarantine";
 const UNDO_MOVE = "move";
 const UNDO_RENAME = "rename";
@@ -19,6 +20,7 @@ const UNDO_DELETE_FOLDER = "delete_folder";
 let runningJobId = "";
 let _jobHeartbeatIntervalId = null;
 let _jobAbortController = null;
+let _startupCleanupStarted = false;
 
 function createJobAbortController() {
   abortJobAbortController();
@@ -44,6 +46,22 @@ function clearRunningJobState(jobId, controller) {
     runningJobId = "";
   }
   clearJobAbortController(controller);
+}
+
+async function cleanupStaleActiveJobOnStartup() {
+  if (_startupCleanupStarted) {
+    return;
+  }
+  _startupCleanupStarted = true;
+  try {
+    const activeJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+    if (!isStartupStaleRunningJob(activeJob)) {
+      return;
+    }
+    await failJob(activeJob, "Service worker restarted. Background job was interrupted.");
+  } catch (_error) {
+    // 启动清理失败不应影响服务工作线程加载。
+  }
 }
 
 function isAbortLikeError(error) {
@@ -216,6 +234,18 @@ async function getActiveJobForPopup() {
 
 function isFreshRunningJob(job) {
   return !!job && job.status === "running" && !isStaleRunningJob(job);
+}
+
+function isStartupStaleRunningJob(job) {
+  if (!job || job.status !== "running") {
+    return false;
+  }
+  const effectiveAt = Date.parse(job.updated_at || job.started_at || "");
+  if (!Number.isFinite(effectiveAt)) {
+    return true;
+  }
+  const now = Date.now();
+  return now - effectiveAt > STARTUP_JOB_STALE_MS;
 }
 
 function isStaleRunningJob(job) {
@@ -489,6 +519,8 @@ async function isJobCancellationRequested(jobId) {
   }
   return current.status !== "running";
 }
+
+void cleanupStaleActiveJobOnStartup();
 
 async function exportCurrentSnapshot() {
   assertBookmarkApiAvailable();
