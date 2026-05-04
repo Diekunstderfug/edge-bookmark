@@ -55,6 +55,7 @@ const STRINGS = {
     btn_cancel_job: "Force Stop",
     status_cancelling: "Cancelling...",
     status_cancelled: "Job cancelled. State reset.",
+    error_cancelled_by_user: "Background job was cancelled by user.",
     error_sw_terminated: "Background task lost connection. The service worker was likely terminated. Click Force Stop to reset.",
     error_need_api_base_url: "Set an HTTPS OpenAI-compatible API base URL in LLM Settings.",
     error_need_model: "Set a model name in LLM Settings.",
@@ -159,6 +160,7 @@ const STRINGS = {
     btn_cancel_job: "\u5f3a\u5236\u7ec8\u6b62",
     status_cancelling: "\u6b63\u5728\u7ec8\u6b62...",
     status_cancelled: "\u5df2\u7ec8\u6b62\uff0c\u72b6\u6001\u5df2\u91cd\u7f6e\u3002",
+    error_cancelled_by_user: "\u540e\u53f0\u4efb\u52a1\u5df2\u88ab\u7528\u6237\u53d6\u6d88\u3002",
     error_sw_terminated: "\u540e\u53f0\u4efb\u52a1\u8fde\u63a5\u4e22\u5931\uff0cService Worker \u53ef\u80fd\u5df2\u88ab\u7ec8\u6b62\u3002\u70b9\u51fb\u5f3a\u5236\u7ec8\u6b62\u91cd\u7f6e\u3002",
     error_need_api_base_url: "请先在模型设置里填写 HTTPS API 地址。",
     error_need_model: "请先在模型设置里填写模型名称。",
@@ -664,18 +666,8 @@ cancelJobButton.addEventListener("click", async () => {
   try {
     await sendRuntimeMessage({ type: "cancel-active-job" });
   } catch (_error) {
-    // Service worker may have already restarted — clear storage directly
+    // Let persisted job state settle through storage changes.
   }
-  try {
-    chrome.storage.local.remove([ACTIVE_JOB_STORAGE_NAME, "bookmarkAdvisorProgress"]);
-  } catch (_e) { /* ignore */ }
-  stopJobStalenessCheck();
-  activeBackgroundJob = null;
-  hideSpinner();
-  generateAiButton.disabled = false;
-  reviseAiButton.disabled = !loadedPlan;
-  executeButton.disabled = !loadedSummary || !loadedSummary.ok || loadedSummary.executableActions.length === 0;
-  updateStatus(t("status_cancelled"), "");
 });
 
 continueButton.addEventListener("click", () => {
@@ -1456,12 +1448,17 @@ function handleJobRecord(job) {
   if (job.status === "failed") {
     stopJobStalenessCheck();
     hideSpinner();
-    cancelJobButton.hidden = !job.recoverable;
+    const cancelledByUser = isCancelledJobMessage(job.error) || isCancelledJobMessage(job.progress);
+    cancelJobButton.hidden = cancelledByUser ? true : !job.recoverable;
     generateAiButton.disabled = false;
     reviseAiButton.disabled = !loadedPlan;
     executeButton.disabled = !loadedSummary || !loadedSummary.ok || loadedSummary.executableActions.length === 0;
-    renderError(job.error || job.progress || "Background job failed.");
+    renderError(cancelledByUser ? t("error_cancelled_by_user") : job.error || job.progress || "Background job failed.");
   }
+}
+
+function isCancelledJobMessage(message) {
+  return typeof message === "string" && /cancelled/i.test(message);
 }
 
 function isActiveJobRunning() {
