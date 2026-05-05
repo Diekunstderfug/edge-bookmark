@@ -460,6 +460,40 @@ class ReorgJobTest(unittest.TestCase):
             folder_names = [child.get("name") for child in children if child.get("type") == "folder"]
             self.assertIn("AI Tools", folder_names)
 
+    def test_apply_reviewed_semantic_plan_deletes_empty_folder_only(self):
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source = write_bookmarks_file(temp_path)
+            destination = temp_path / "out.json"
+            reviewed_plan = {
+                "actions": [
+                    {
+                        "action_type": "delete_empty_folder",
+                        "status": "approved",
+                        "reason": "empty folder cleanup",
+                        "confidence": 0.99,
+                        "folder_locator": {
+                            "id": "10",
+                            "name": "AI",
+                            "path": "/收藏夹栏/AI",
+                        },
+                        "from_path": "/收藏夹栏/AI",
+                    }
+                ]
+            }
+
+            apply_reviewed_semantic_plan(
+                reviewed_plan,
+                source_path=source,
+                destination=destination,
+                write_source=False,
+            )
+
+            payload = json.loads(destination.read_text(encoding="utf-8"))
+            children = payload["roots"]["bookmark_bar"]["children"]
+            folder_names = [child.get("name") for child in children if child.get("type") == "folder"]
+            self.assertNotIn("AI", folder_names)
+
 
 if __name__ == "__main__":
     unittest.main()

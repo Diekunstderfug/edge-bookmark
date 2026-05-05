@@ -51,6 +51,47 @@ class ExtensionPlanLintTest(unittest.TestCase):
         self.assertEqual(len(cast(list[object], summary_dict["executableActions"])), 0)
         self.assertEqual(len(cast(list[object], summary_dict["reviewActions"])), 1)
 
+    def test_agreed_keep_for_review_counts_as_executable_noop(self):
+        summary = self._node_eval(
+            """
+            BookmarkPlanLint.lintPlan({
+              actions: [{
+                action_id: 'a-1',
+                action_type: 'keep_for_review',
+                status: 'approved',
+                reason: 'reviewed and intentionally left unchanged',
+                confidence: 0.3,
+                bookmark_locator: { id: '10', title: 'Example', url: 'https://example.com' },
+                details: { review_agreed: true }
+              }]
+            })
+            """
+        )
+        summary_dict = cast(dict[str, object], summary)
+        self.assertEqual(len(cast(list[object], summary_dict["executableActions"])), 1)
+        self.assertEqual(len(cast(list[object], summary_dict["reviewActions"])), 0)
+
+    def test_delete_empty_folder_requires_folder_locator_and_is_executable(self):
+        summary = self._node_eval(
+            """
+            BookmarkPlanLint.lintPlan({
+              actions: [{
+                action_id: 'a-1',
+                action_type: 'delete_empty_folder',
+                status: 'approved',
+                reason: 'empty folder no longer needed',
+                confidence: 0.9,
+                folder_locator: { id: '20', name: 'Empty', path: '/收藏夹栏/Empty' },
+                from_path: '/收藏夹栏/Empty'
+              }]
+            })
+            """
+        )
+        summary_dict = cast(dict[str, object], summary)
+        self.assertEqual(summary_dict["ok"], True)
+        self.assertEqual(len(cast(list[object], summary_dict["executableActions"])), 1)
+        self.assertEqual(len(cast(list[object], summary_dict["reviewActions"])), 0)
+
 
 if __name__ == "__main__":
     _ = unittest.main()

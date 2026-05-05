@@ -13,6 +13,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _AI_PLANNER = _REPO_ROOT / "extension" / "ai_planner.js"
 
 
+def _last_json_line(output: str) -> str:
+    for line in reversed(output.splitlines()):
+        if line.strip():
+            return line
+    return output
+
+
 @unittest.skipUnless(shutil.which("node"), "node is required for extension JS endpoint tests")
 class ExtensionEndpointUrlTest(unittest.TestCase):
     def _node_eval(self, expression: str) -> object:
@@ -29,7 +36,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             cwd=_REPO_ROOT,
             timeout=15,
         )
-        return cast(object, json.loads(completed.stdout))
+        return cast(object, json.loads(_last_json_line(completed.stdout)))
 
     def _node_script(self, body: str) -> object:
         script = f"require({json.dumps(str(_AI_PLANNER))});\n{body}\n"
@@ -41,7 +48,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             cwd=_REPO_ROOT,
             timeout=15,
         )
-        return cast(object, json.loads(completed.stdout))
+        return cast(object, json.loads(_last_json_line(completed.stdout)))
 
     def test_base_url_appends_responses_endpoint(self):
         self.assertEqual(
@@ -122,7 +129,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         self.assertIn("Revise the current reviewed bookmark plan", prompt_text)
         self.assertIn("Keep AI tools separate", prompt_text)
         self.assertIn("old reason", prompt_text)
-        self.assertIn("Bookmarks (id|title|domain|folder_path):", prompt_text)
+        self.assertIn("B 10 Example", prompt_text)
 
     def test_llm_schema_uses_lightweight_activations_not_full_actions(self):
         schema = self._node_eval("BookmarkAdvisorAI._activationResponseSchema()")

@@ -359,6 +359,49 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertTrue(str(result["startedAt"]))
         self.assertTrue(str(result["updatedAt"]))
 
+    def test_get_active_job_consumes_late_persisted_offscreen_result(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{ bookmarkAdvisorActiveJob: {{ id: 'job-late', type: 'generate-ai-plan', status: 'running', started_at: new Date().toISOString(), updated_at: new Date().toISOString(), stage: 'llm' }} }};
+        let listener = null;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: () => {{ throw new Error('late offscreen recovery should not touch bookmarks'); }} }}
+        }};
+        require(serviceWorkerPath);
+        setTimeout(() => {{
+          storage.bookmarkAdvisorOffscreenResult = {{
+            jobId: 'job-late',
+            ok: true,
+            result: {{ reviewed_plan: {{ actions: [{{ action_type: 'move_bookmark' }}] }} }},
+            timestamp: Date.now()
+          }};
+          listener({{ type: 'get-active-job' }}, null, (response) => {{
+            console.log(JSON.stringify({{
+              status: response.job.status,
+              progress: response.job.progress,
+              savedActionType: storage.bookmarkAdvisorLastPlan.plan.actions[0].action_type,
+              resultCleared: !storage.bookmarkAdvisorOffscreenResult
+            }}));
+          }});
+        }}, 25);
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["progress"], "Restored from offscreen after popup wake.")
+        self.assertEqual(result["savedActionType"], "move_bookmark")
+        self.assertEqual(result["resultCleared"], True)
+
     def test_cancel_requested_stops_reviewed_plan_before_remaining_actions(self):
         script = f"""
         const path = require('path');
@@ -1080,6 +1123,167 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["undoMoveCalls"], 2)
         self.assertEqual(result["restoredTo"], "1")
+
+    def test_agreed_keep_for_review_executes_as_noop_report_entry(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let bookmarkMutations = 0;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [] }}]),
+            create: () => {{ bookmarkMutations += 1; throw new Error('noop should not mutate'); }},
+            move: () => {{ bookmarkMutations += 1; throw new Error('noop should not mutate'); }},
+            update: () => {{ bookmarkMutations += 1; throw new Error('noop should not mutate'); }},
+            remove: () => {{ bookmarkMutations += 1; throw new Error('noop should not mutate'); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'keep_for_review',
+          status: 'approved',
+          reason: 'reviewed and intentionally left unchanged',
+          confidence: 0.3,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com' }},
+          details: {{ review_agreed: true }}
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            actionType: response.succeeded[0] && response.succeeded[0].actionType,
+            bookmarkMutations,
+            undoLogLength: (storage.bookmarkAdvisorUndoLog || []).length
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["actionType"], "keep_for_review")
+        self.assertEqual(result["bookmarkMutations"], 0)
+        self.assertEqual(result["undoLogLength"], 0)
+
+    def test_delete_empty_folder_removes_only_empty_folder_and_records_undo(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        const removed = [];
+        const nodes = {{
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }},
+          '20': {{ id: '20', title: 'Empty', parentId: '1' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getChildren: (id, callback) => callback(id === '20' ? [] : [nodes['20']]),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '20', title: 'Empty', children: [] }}] }}] }}]),
+            remove: (id, callback) => {{ removed.push(id); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'delete_empty_folder',
+          status: 'approved',
+          reason: 'empty folder no longer needed',
+          confidence: 0.9,
+          folder_locator: {{ id: '20', name: 'Empty', path: '/收藏夹栏/Empty' }},
+          from_path: '/收藏夹栏/Empty'
+        }}] }} }}, null, (response) => {{
+          const undoLog = storage.bookmarkAdvisorUndoLog || [];
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            removed,
+            undoType: undoLog[0] && undoLog[0].undo_action.type,
+            undoPath: undoLog[0] && undoLog[0].undo_action.path
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["removed"], ["20"])
+        self.assertEqual(result["undoType"], "create_folder")
+        self.assertEqual(result["undoPath"], "/收藏夹栏/Empty")
+
+    def test_delete_empty_folder_rejects_non_empty_folder(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let removeCalls = 0;
+        const nodes = {{
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }},
+          '20': {{ id: '20', title: 'Not Empty', parentId: '1' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getChildren: (id, callback) => callback(id === '20' ? [{{ id: '30', title: 'Child', url: 'https://example.com' }}] : [nodes['20']]),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '20', title: 'Not Empty', children: [{{ id: '30', title: 'Child', url: 'https://example.com' }}] }}] }}] }}]),
+            remove: (_id, callback) => {{ removeCalls += 1; if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'delete_empty_folder',
+          status: 'approved',
+          reason: 'try delete',
+          confidence: 0.9,
+          folder_locator: {{ id: '20', name: 'Not Empty', path: '/收藏夹栏/Not Empty' }},
+          from_path: '/收藏夹栏/Not Empty'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            error: response.failures[0] && response.failures[0].error,
+            removeCalls
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 0)
+        self.assertEqual(result["failures"], 1)
+        self.assertIn("requires the folder to be empty", str(result["error"]))
+        self.assertEqual(result["removeCalls"], 0)
 
 
 if __name__ == "__main__":

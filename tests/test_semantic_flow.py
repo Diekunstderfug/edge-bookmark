@@ -297,6 +297,7 @@ class SemanticFlowTest(unittest.TestCase):
 
     def test_rename_folder_in_supported_ai_actions(self):
         self.assertIn("rename_folder", SUPPORTED_AI_ACTIONS)
+        self.assertIn("delete_empty_folder", SUPPORTED_AI_ACTIONS)
 
     def test_to_name_round_trip_via_to_dict_and_from_dict(self):
         action = SemanticAction(
