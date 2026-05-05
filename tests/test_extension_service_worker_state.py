@@ -1634,6 +1634,85 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["jobIdStartsWithJob"], True)
         self.assertEqual(result["noFakeJobId"], True)
 
+    def _run_offscreen_notify_failure_test(self, mode: str) -> dict[str, object]:
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const offscreenPath = {json.dumps(str(_REPO_ROOT / 'extension' / 'offscreen.js'))};
+        const storage = {{}};
+        let listener = null;
+        const sentTypes = [];
+        console.log = () => {{}};
+        console.warn = () => {{}};
+        console.error = () => {{}};
+        global.chrome = {{
+          runtime: {{
+            sendMessage: async (message) => {{
+              sentTypes.push(message.type);
+              if (message.type === 'offscreen-result') {{
+                throw new Error('sw unavailable');
+              }}
+              return {{ ok: true }};
+            }},
+            onMessage: {{ addListener: (callback) => {{ listener = callback; }} }}
+          }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
+          }} }}
+        }};
+        global.BookmarkAdvisorAI = {{
+          generateReviewedPlan: async () => ({{ reviewed_plan: {{ actions: [{{ action_type: 'move_bookmark' }}] }} }}),
+          reviseReviewedPlan: async () => ({{ reviewed_plan: {{ actions: [{{ action_type: 'move_bookmark' }}] }} }})
+        }};
+        function waitFor(predicate, deadlineMs = 1000) {{
+          const deadline = Date.now() + deadlineMs;
+          return new Promise((resolve, reject) => {{
+            function tick() {{
+              if (predicate()) {{ resolve(); return; }}
+              if (Date.now() > deadline) {{ reject(new Error('timed out')); return; }}
+              setTimeout(tick, 5);
+            }}
+            tick();
+          }});
+        }}
+        require(offscreenPath);
+        listener({{ type: 'offscreen-llm', jobId: 'job-offscreen', mode: {json.dumps(mode)}, payload: {{ options: {{}} }} }}, null, () => {{}});
+        waitFor(() => storage.bookmarkAdvisorOffscreenResult && storage.bookmarkAdvisorOffscreenResult.ok === true).then(() => {{
+          process.stdout.write(JSON.stringify({{
+            stored: storage.bookmarkAdvisorOffscreenResult,
+            sentTypes
+          }}));
+        }}).catch((error) => {{
+          process.stderr.write(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        return cast(dict[str, object], self._node_script(script))
+
+    def test_offscreen_generate_keeps_success_when_result_notify_fails(self):
+        result = self._run_offscreen_notify_failure_test('generate')
+        stored = cast(dict[str, object], result["stored"])
+        stored_result = cast(dict[str, object], stored["result"])
+        reviewed_plan = cast(dict[str, object], stored_result["reviewed_plan"])
+        actions = cast(list[object], reviewed_plan["actions"])
+        first_action = cast(dict[str, object], actions[0])
+        self.assertEqual(stored["ok"], True)
+        self.assertEqual(first_action["action_type"], "move_bookmark")
+        self.assertIn("offscreen-result", cast(list[str], result["sentTypes"]))
+
+    def test_offscreen_revise_keeps_success_when_result_notify_fails(self):
+        result = self._run_offscreen_notify_failure_test('revise')
+        stored = cast(dict[str, object], result["stored"])
+        stored_result = cast(dict[str, object], stored["result"])
+        reviewed_plan = cast(dict[str, object], stored_result["reviewed_plan"])
+        actions = cast(list[object], reviewed_plan["actions"])
+        first_action = cast(dict[str, object], actions[0])
+        self.assertEqual(stored["ok"], True)
+        self.assertEqual(first_action["action_type"], "move_bookmark")
+        self.assertIn("offscreen-result", cast(list[str], result["sentTypes"]))
+
     def test_compat_generate_ai_plan_can_be_cancelled(self):
         """Compatibility path generate-ai-plan job is cancellable via cancel-active-job."""
         script = f"""

@@ -57,12 +57,6 @@
     }
   }
 
-  async function clearOffscreenResult() {
-    try {
-      await chrome.storage.local.remove(OFFSCREEN_RESULT_STORAGE);
-    } catch (_e) {}
-  }
-
   // 包装 onProgress：同时更新本地状态并通过消息通知 SW
   function makeProgressCallback(jobId) {
     return function (message) {
@@ -71,12 +65,6 @@
       }
       void sendToSw("offscreen-progress", jobId, { message }).catch(() => {});
     };
-  }
-
-  function createAbortError(message) {
-    const error = new Error(message || "The operation was aborted.");
-    error.name = "AbortError";
-    return error;
   }
 
   async function handleGenerate(jobId, payload) {
@@ -95,11 +83,16 @@
       // eslint-disable-next-line no-console
       console.log(`[BookmarkAdvisor][offscreen] generateReviewedPlan returned, persisting result...`);
       await persistOffscreenResult(jobId, { ok: true, result });
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] result persisted, sending offscreen-result to SW...`);
-      await sendToSw("offscreen-result", jobId, { result });
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] offscreen-result sent to SW`);
+      try {
+        // eslint-disable-next-line no-console
+        console.log(`[BookmarkAdvisor][offscreen] result persisted, sending offscreen-result to SW...`);
+        await sendToSw("offscreen-result", jobId, { result });
+        // eslint-disable-next-line no-console
+        console.log(`[BookmarkAdvisor][offscreen] offscreen-result sent to SW`);
+      } catch (notifyError) {
+        // eslint-disable-next-line no-console
+        console.warn(`[BookmarkAdvisor][offscreen] offscreen-result notify failed after persist (non-fatal):`, notifyError?.message || notifyError);
+      }
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error(`[BookmarkAdvisor][offscreen] handleGenerate error:`, error);
@@ -134,11 +127,16 @@
       // eslint-disable-next-line no-console
       console.log(`[BookmarkAdvisor][offscreen] reviseReviewedPlan returned, persisting result...`);
       await persistOffscreenResult(jobId, { ok: true, result });
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] result persisted, sending offscreen-result to SW...`);
-      await sendToSw("offscreen-result", jobId, { result });
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] offscreen-result sent to SW`);
+      try {
+        // eslint-disable-next-line no-console
+        console.log(`[BookmarkAdvisor][offscreen] result persisted, sending offscreen-result to SW...`);
+        await sendToSw("offscreen-result", jobId, { result });
+        // eslint-disable-next-line no-console
+        console.log(`[BookmarkAdvisor][offscreen] offscreen-result sent to SW`);
+      } catch (notifyError) {
+        // eslint-disable-next-line no-console
+        console.warn(`[BookmarkAdvisor][offscreen] offscreen-result notify failed after persist (non-fatal):`, notifyError?.message || notifyError);
+      }
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error(`[BookmarkAdvisor][offscreen] handleRevise error:`, error);
