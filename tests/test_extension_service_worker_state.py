@@ -418,6 +418,49 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["savedActionType"], "move_bookmark")
         self.assertEqual(result["resultCleared"], True)
 
+    def test_get_active_job_clears_matching_persisted_result_for_non_running_job(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{ bookmarkAdvisorActiveJob: {{ id: 'job-failed', type: 'generate-ai-plan', status: 'failed', started_at: new Date().toISOString(), updated_at: new Date().toISOString(), progress: 'Already failed', error: 'Already failed' }} }};
+        let listener = null;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: () => {{ throw new Error('non-running recovery should not touch bookmarks'); }} }}
+        }};
+        require(serviceWorkerPath);
+        setTimeout(() => {{
+          storage.bookmarkAdvisorOffscreenResult = {{
+            jobId: 'job-failed',
+            ok: true,
+            result: {{ reviewed_plan: {{ actions: [{{ action_type: 'move_bookmark' }}] }} }},
+            timestamp: Date.now()
+          }};
+          listener({{ type: 'get-active-job' }}, null, (response) => {{
+            console.log(JSON.stringify({{
+              status: response.job.status,
+              progress: response.job.progress,
+              resultCleared: !storage.bookmarkAdvisorOffscreenResult,
+              lastPlanSaved: !!storage.bookmarkAdvisorLastPlan
+            }}));
+          }});
+        }}, 25);
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["progress"], "Already failed")
+        self.assertEqual(result["resultCleared"], True)
+        self.assertEqual(result["lastPlanSaved"], False)
+
     def test_cancel_requested_stops_reviewed_plan_before_remaining_actions(self):
         script = f"""
         const path = require('path');

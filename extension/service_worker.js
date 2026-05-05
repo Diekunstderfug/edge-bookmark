@@ -391,11 +391,14 @@ async function consumeOffscreenCompletionMessage(message) {
 
 async function consumeOffscreenResultPayload(offscreenResult, progress, options = {}) {
   const activeJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
-  if (!activeJob || activeJob.status !== "running" || activeJob.id !== offscreenResult.jobId) {
+  if (!activeJob || activeJob.id !== offscreenResult.jobId) {
     return null;
   }
   if (options.removeStoredResult) {
     await chromeStorageRemove(OFFSCREEN_RESULT_STORAGE_NAME);
+  }
+  if (activeJob.status !== "running") {
+    return null;
   }
   if (offscreenResult.ok && offscreenResult.result) {
     if (activeJob.type === "generate-ai-plan" || activeJob.type === "revise-ai-plan") {
