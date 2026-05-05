@@ -1,6 +1,6 @@
 # tests/
 
-Python unittest suite — 9 files, stdlib only (`unittest.TestCase`). No pytest, no conftest, no shared fixtures.
+Python and extension test suite. Core CLI tests use stdlib `unittest.TestCase`; extension tests are Python pytest files that execute Node.js subprocesses with mock `chrome` globals.
 
 ## WHERE TO LOOK
 
@@ -14,7 +14,13 @@ Python unittest suite — 9 files, stdlib only (`unittest.TestCase`). No pytest,
 | `test_semantic_flow.py` | End-to-end — snapshot export, guardrails, AI prompts, finalization, diff |
 | `test_extension_service_worker_state.py` | Extension service worker — plan execution, undo log, policy engine, quarantine, locator verification |
 | `test_extension_endpoint_urls.py` | Extension AI planner — endpoint URLs, activation schema, lint/retry behavior, prompt encoding |
+| `test_extension_plan_lint.py` | Extension plan lint — action shape validation and executable/no-op classification |
 | `test_extension_popup_state.py` | Extension popup — form persistence, settings, i18n |
+| `test_prompt_parity.py` | Python/JS prompt policy parity |
+| `test_prompt_sanitization.py` | Prompt sanitization helpers |
+| `test_rules_parity.py` | Python/extension rule behavior parity |
+| `test_url_parity.py` | Python/extension URL normalization parity |
+| `test_atomic_write.py` | Atomic JSON write helpers |
 
 ## CONVENTIONS
 
@@ -36,7 +42,10 @@ Python unittest suite — 9 files, stdlib only (`unittest.TestCase`). No pytest,
 PYTHONPATH=src python3 -m unittest discover -s tests
 
 # Run extension tests (requires node)
-python -m pytest tests/test_extension_service_worker_state.py tests/test_extension_endpoint_urls.py tests/test_extension_popup_state.py -x -q
+python -m pytest tests/test_extension_service_worker_state.py tests/test_extension_plan_lint.py tests/test_extension_endpoint_urls.py tests/test_extension_popup_state.py -x -q
+
+# Run targeted extension behavior/lint tests
+python -m pytest tests/test_extension_plan_lint.py tests/test_extension_service_worker_state.py -q
 
 # Run single file
 PYTHONPATH=src python3 tests/test_rules.py

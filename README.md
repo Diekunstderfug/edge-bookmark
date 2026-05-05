@@ -4,11 +4,13 @@ AI-first Microsoft Edge bookmark organizer — semantic cleanup with guardrails,
 
 ## Feature highlights
 
-- **One-click AI reorganization** — generate a plan from an OpenAI-compatible LLM, review each proposed move, execute inside Edge
+- **One-click AI reorganization** — generate a plan from an OpenAI-compatible LLM, review proposed actions, execute inside Edge
 - **Undo last execution** — every mutation records pre-state; reverse the entire batch with one click
 - **Quarantine, not delete** — duplicate bookmarks go to `_Quarantine` instead of being permanently removed
+- **Empty-folder cleanup** — `delete_empty_folder` removes only folders that are still empty at execution time
+- **Background job lifecycle** — long-running AI plans and executions run as cancellable background jobs with heartbeat, stale detection, and offscreen recovery
 - **Focus scope** — restrict AI planning and execution to a single folder tree; policy engine blocks out-of-scope mutations
-- **Per-action approve/revise** — each proposed move, rename, or create has its own approve button and revision note
+- **Per-action approve/revise** — each proposed move, rename, create, delete-empty-folder, or review item has its own approval path
 - **Auto-save form state** — popup drafts survive focus loss; reopen and pick up where you left off
 - **AES-GCM encrypted API key** — key derived from extension install ID, stored in `chrome.storage.local`
 - **CLI path for deep review** — offline URL review sidecars, enriched snapshots, and diffing for high-stakes cleanup
@@ -24,7 +26,7 @@ AI-first Microsoft Edge bookmark organizer — semantic cleanup with guardrails,
 7. Click **Execute Reviewed Plan**
 8. After execution, undo if needed, or click **Generate New Plan for Remaining** to continue with unreviewed items
 
-The extension uses raw `fetch` against OpenAI-compatible REST APIs (Responses API → Chat Completions → JSON object fallback). No SDK dependency.
+The extension uses raw `fetch` against OpenAI-compatible REST APIs (Responses API → Chat Completions → JSON object fallback). Long LLM calls run through an MV3 offscreen document so the service worker can recover persisted results after wakeups. No SDK dependency.
 
 ### Extension safety
 
@@ -32,8 +34,10 @@ The extension uses raw `fetch` against OpenAI-compatible REST APIs (Responses AP
 |---------|-------------|
 | Undo log | Records parentId + title before each mutation; one-click reversal |
 | Quarantine | `remove_duplicate` moves to `_Quarantine` instead of permanent delete |
+| Empty-folder delete | `delete_empty_folder` re-checks that the target folder has no children before removal; undo recreates the empty folder path |
+| Background jobs | Heartbeat prevents stale detection; hard cancel via AbortController; startup cleanup for interrupted jobs |
 | Policy engine | Blocks actions that would escape the focused folder |
-| Per-action review | Individual approve/revise per action, not per category group |
+| Per-action review | Individual approve/revise per action, not per category group; agreed `keep_for_review` rows execute as no-op report entries |
 | Locator verification | Re-checks bookmark/folder IDs exist before every mutation |
 | Mutation lock | Service-worker-level lock prevents concurrent plan executions |
 | Max retries | Configurable LLM lint-failure retry count (default 1, range 0-3) |
@@ -111,7 +115,7 @@ extension/          ← Edge MV3 extension (vanilla JS, no build step)
 src/bookmark_advisor/  ← Python CLI (setuptools src-layout)
 config/rules.yaml   ← Guardrails: protected paths, forced relocations, category hints
 skills/             ← Agent skills for bookmark-reorg and url-review workflows
-tests/              ← 9 test files (6 Python CLI + 3 extension)
+tests/              ← unittest/pytest test modules for CLI and extension behavior
 data/               ← Runtime artifacts: snapshots, plans, jobs (gitignored)
 ```
 
@@ -127,6 +131,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 
 # Extension tests (requires node)
 python -m pytest tests/test_extension_service_worker_state.py \
+  tests/test_extension_plan_lint.py \
   tests/test_extension_endpoint_urls.py \
   tests/test_extension_popup_state.py -x -q
 ```

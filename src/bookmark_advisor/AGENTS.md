@@ -10,7 +10,7 @@ Python CLI package for bookmark snapshot export, AI/heuristic planning, job orch
 | Data models | `models.py` | `PlanAction`, `SemanticPlan`, `SnapshotDocument`, `ReorgJob`, `SemanticAction`, all dataclasses |
 | AI planning | `ai_planner.py` | `plan_with_openai()`, `finalize_draft_plan()`, `apply_guardrails_to_actions()` |
 | Heuristic planning | `planner.py` | `build_advise_plan()`, `build_merge_plan()` — legacy folder ranking |
-| Plan execution | `executor.py` | `apply_plan()`, `apply_reviewed_semantic_plan()` — JSON-tree mutation |
+| Plan execution | `executor.py` | `apply_plan()`, `apply_reviewed_semantic_plan()` — JSON-tree mutation, including empty-folder deletion |
 | Job orchestration | `job_runner.py` | `init_reorg_job()`, `run_reorg_job()` — phase machine |
 | Rules engine | `rules.py` | `load_rules()`, `validate_rules_data()` — custom YAML parser |
 | Snapshot I/O | `snapshot_io.py` | `build_snapshot_document()`, `diff_snapshot_documents()`, enrich/queue builders |
@@ -35,6 +35,7 @@ Each phase reads input artifact(s), produces output artifact, advances job state
 - **Dataclasses only**: All models are `@dataclass` in `models.py`. No Pydantic, no attrs.
 - **File-based data flow**: All intermediate artifacts are JSON files in `data/` (gitignored)
 - **OpenAI fallback chain**: `ai_planner.py` tries responses API → chat.completions JSON schema → json_object mode
+- **Semantic action set**: AI/reviewed plans can include `move_bookmark`, `move_folder`, `create_folder`, `rename_folder`, `remove_duplicate`, `delete_empty_folder`, and `keep_for_review`
 - **No external deps except `openai`**: Uses only stdlib otherwise (`json`, `dataclasses`, `argparse`, `urlparse`, `tempfile`)
 
 ## ANTI-PATTERNS

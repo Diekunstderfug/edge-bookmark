@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-05-01
-**Commit:** 5904baa
+**Generated:** 2026-05-06
+**Commit:** 5aa5b11
 **Branch:** main
 
 ## OVERVIEW
@@ -16,7 +16,7 @@ edge-bookmark/
 ├── extension/              # Edge MV3 extension (vanilla JS, no build step)
 ├── config/                 # rules.yaml — guardrails, category hints, relocations
 ├── skills/                 # Markdown skills for coding agents (bookmark-reorg, bookmark-url-review)
-├── tests/                  # unittest suite (9 files — 6 Python CLI, 3 extension)
+├── tests/                  # unittest/pytest suite for Python CLI and extension behavior
 └── data/                   # Runtime: snapshots, plans, jobs (gitignored)
 ```
 
@@ -34,8 +34,10 @@ edge-bookmark/
 | Snapshot I/O | `src/bookmark_advisor/snapshot_io.py` | Read/write JSON snapshots, review queues, enriched snapshots, diffing |
 | URL utilities | `src/bookmark_advisor/utils.py` | normalize_url, extract_domain, tokenize, slugify |
 | Extension popup | `extension/popup.js` + `popup.html` | UI, form persistence, AES-GCM key storage, per-action approve/revise |
-| Extension background | `extension/service_worker.js` | chrome.bookmarks API operations, plan execution, undo log, policy engine, quarantine |
+| Extension background | `extension/service_worker.js` | chrome.bookmarks API operations, plan execution, undo log, policy engine, quarantine, empty-folder cleanup |
 | Extension AI planner | `extension/ai_planner.js` | HTTPS fetch against OpenAI-compatible APIs (SDK-free), pipe-delimited prompt encoding |
+| Extension offscreen runtime | `extension/offscreen.js` + `offscreen.html` | Long-running LLM fetches outside the MV3 service worker lifecycle |
+| Background job lifecycle | `extension/service_worker.js` | Heartbeat, stale detection, cooperative/hard cancel, startup cleanup, offscreen recovery |
 | Shared helpers | `extension/storage_helpers.js` | Storage constants, chrome.storage wrappers, `pathWithinScope` |
 | Plan validation | `extension/plan_lint.js` | JSON syntax + plan-shape linting in-browser |
 | Guardrail rules | `config/rules.yaml` | Protected paths, category hints, forced relocations |
@@ -66,7 +68,7 @@ edge-bookmark/
 - **Python path**: `PYTHONPATH=src python3 -m bookmark_advisor <command>` — always set PYTHONPATH
 - **No pyyaml dependency**: `rules.py` contains a custom YAML parser — do not add pyyaml
 - **No pytest for Python CLI tests**: CLI tests use stdlib `unittest.TestCase` + `unittest.main()`, run via `python3 -m unittest discover -s tests`
-- **Extension tests use pytest + node**: `test_extension_*.py` files run via pytest but execute Node.js subprocesses with mock `chrome` globals
+- **Extension tests use pytest + node**: `test_extension_*.py` and `test_extension_plan_lint.py` run via pytest but execute Node.js subprocesses with mock `chrome` globals
 - **No JS build step**: Extension files in `extension/` are production-ready vanilla JS — no transpilation
 - **Two AI planning paths**: CLI uses OpenAI Python SDK; extension uses raw `fetch` (SDK-free by design)
 - **Data flow is file-based**: Intermediate artifacts are JSON files (snapshot → review-queue → url-review → enriched-snapshot → draft-plan → reviewed-plan → execution-report)
@@ -119,6 +121,10 @@ python3 -m json.tool data/plans/reviewed_plan.json
 - Popup auto-saves form drafts because extension popups are destroyed on focus loss
 - Extension undo log allows reversing the most recent execution batch
 - Duplicate bookmarks are quarantined to `_Quarantine` instead of permanently deleted
+- Empty folders can be removed through `delete_empty_folder`; execution re-checks emptiness and undo recreates the empty folder path
+- Agreed `keep_for_review` actions can execute as no-op report entries so review-only decisions can be tracked
 - Focus-path policy engine blocks out-of-scope actions at execution time
 - Max retries (default 1, range 0-3) controls LLM lint-failure retry count
+- Background jobs use a heartbeat mechanism to prevent being marked stale during long-running operations; stale threshold is 30 minutes, startup stale threshold is 60 seconds
+- Cooperative cancellation sets `cancellation_requested_at`; hard cancel uses `AbortController` to immediately interrupt the job
 - No CI/CD pipeline — manual testing and deployment
