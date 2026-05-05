@@ -121,6 +121,80 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["savedAtPresent"], True)
         self.assertEqual(result["progressMessage"], "AI plan generated and saved for popup restore.")
 
+    def test_has_offscreen_document_falls_back_to_offscreen_api(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{
+            require(path.join(repoRoot, 'extension', file));
+          }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension',
+            lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            sendMessage: async () => ({{ ok: true }}),
+            onMessage: {{ addListener: () => {{}} }}
+          }},
+          offscreen: {{
+            createDocument: async () => ({{}}),
+            hasDocument: async () => true
+          }},
+          storage: {{ local: {{ set: () => {{}}, get: (_key, callback) => callback({{}}), remove: () => {{}} }} }}
+        }};
+        require(serviceWorkerPath);
+        Promise.all([
+          globalThis.__bookmarkAdvisorTestHooks.hasOffscreenDocument(),
+          globalThis.__bookmarkAdvisorTestHooks.supportsOffscreenProtocol(),
+        ]).then(([hasDocument, supportsProtocol]) => {{
+          console.log(JSON.stringify({{ hasDocument, supportsProtocol }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["hasDocument"], True)
+        self.assertEqual(result["supportsProtocol"], True)
+
+    def test_supports_offscreen_protocol_without_get_contexts(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{
+            require(path.join(repoRoot, 'extension', file));
+          }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension',
+            lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            sendMessage: async () => ({{ ok: true }}),
+            onMessage: {{ addListener: () => {{}} }}
+          }},
+          offscreen: {{
+            createDocument: async () => ({{}}),
+            hasDocument: async () => false
+          }},
+          storage: {{ local: {{ set: () => {{}}, get: (_key, callback) => callback({{}}), remove: () => {{}} }} }}
+        }};
+        require(serviceWorkerPath);
+        Promise.resolve(globalThis.__bookmarkAdvisorTestHooks.supportsOffscreenProtocol()).then((supportsProtocol) => {{
+          console.log(JSON.stringify({{ supportsProtocol }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["supportsProtocol"], True)
+
     def test_background_job_returns_immediately_then_persists_result(self):
         script = f"""
         const path = require('path');

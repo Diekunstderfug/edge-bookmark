@@ -64,14 +64,17 @@ function clearRunningJobState(jobId, controller) {
 // ── Offscreen Document 管理 ──
 
 async function hasOffscreenDocument() {
-  if (!chrome.runtime || typeof chrome.runtime.getContexts !== "function") {
-    return false;
+  if (chrome.runtime && typeof chrome.runtime.getContexts === "function") {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [OFFSCREEN_DOCUMENT_URL],
+    });
+    return contexts.length > 0;
   }
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ["OFFSCREEN_DOCUMENT"],
-    documentUrls: [OFFSCREEN_DOCUMENT_URL],
-  });
-  return contexts.length > 0;
+  if (chrome.offscreen && typeof chrome.offscreen.hasDocument === "function") {
+    return chrome.offscreen.hasDocument();
+  }
+  return false;
 }
 
 async function ensureOffscreenDocument() {
@@ -113,12 +116,21 @@ async function closeOffscreenDocument() {
 
 function supportsOffscreenProtocol() {
   return !!(
-    chrome.runtime &&
-    typeof chrome.runtime.getContexts === "function" &&
-    typeof chrome.runtime.sendMessage === "function" &&
+    chrome.runtime && typeof chrome.runtime.sendMessage === "function" &&
     chrome.offscreen &&
-    typeof chrome.offscreen.createDocument === "function"
+    typeof chrome.offscreen.createDocument === "function" &&
+    (
+      typeof chrome.runtime.getContexts === "function" ||
+      typeof chrome.offscreen.hasDocument === "function"
+    )
   );
+}
+
+if (typeof process !== "undefined" && typeof globalThis !== "undefined") {
+  globalThis.__bookmarkAdvisorTestHooks = {
+    hasOffscreenDocument,
+    supportsOffscreenProtocol,
+  };
 }
 
 function createAbortError(message) {
