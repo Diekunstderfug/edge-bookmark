@@ -444,8 +444,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "generate-ai-plan") {
-    runDirectMutatingOperation("generate-ai-plan", () => generateAiReviewedPlan(message.options || {}, reportProgress))
-      .then((result) => sendResponse(result))
+    startBackgroundJob("generate-ai-plan", { options: message.options || {} })
+      .then((bgResponse) => {
+        if (bgResponse.error) {
+          reportProgress(`AI planning failed: ${bgResponse.error}`);
+          sendResponse({ error: bgResponse.error });
+          return;
+        }
+        return waitForBackgroundJobCompletion(bgResponse.job.id).then((finalJob) => {
+          if (finalJob.status === "failed") {
+            reportProgress(`AI planning failed: ${finalJob.error || finalJob.progress}`);
+            sendResponse({ error: finalJob.error || finalJob.progress });
+            return;
+          }
+          sendResponse(finalJob.result);
+        });
+      })
       .catch((error) => {
         reportProgress(`AI planning failed: ${error.message || String(error)}`);
         sendResponse({ error: error.message || String(error) });
@@ -454,8 +468,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "revise-ai-plan") {
-    runDirectMutatingOperation("revise-ai-plan", () => reviseAiReviewedPlan(message.plan, message.options || {}, reportProgress))
-      .then((result) => sendResponse(result))
+    startBackgroundJob("revise-ai-plan", { plan: message.plan, options: message.options || {} })
+      .then((bgResponse) => {
+        if (bgResponse.error) {
+          reportProgress(`AI plan revision failed: ${bgResponse.error}`);
+          sendResponse({ error: bgResponse.error });
+          return;
+        }
+        return waitForBackgroundJobCompletion(bgResponse.job.id).then((finalJob) => {
+          if (finalJob.status === "failed") {
+            reportProgress(`AI plan revision failed: ${finalJob.error || finalJob.progress}`);
+            sendResponse({ error: finalJob.error || finalJob.progress });
+            return;
+          }
+          sendResponse(finalJob.result);
+        });
+      })
       .catch((error) => {
         reportProgress(`AI plan revision failed: ${error.message || String(error)}`);
         sendResponse({ error: error.message || String(error) });
@@ -543,6 +571,21 @@ async function startBackgroundJob(jobType, payload) {
     clearRunningJobState(job.id, jobAbortController);
   });
   return { job };
+}
+
+async function waitForBackgroundJobCompletion(jobId, pollIntervalMs = 50, deadlineMs = 300000) {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    const job = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+    if (!job || job.id !== jobId) {
+      return job || { status: "failed", error: "Job lost from storage." };
+    }
+    if (job.status !== "running") {
+      return job;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+  return { status: "failed", error: "Timed out waiting for background job completion." };
 }
 
 async function runDirectMutatingOperation(jobType, callback) {
@@ -838,91 +881,7 @@ function jobProgress(job, message) {
   });
 }
 
-async function generateAiReviewedPlan(options, onProgress = reportProgress) {
-  try {
-    await onProgress("Exporting current bookmarks...");
-    const t0 = Date.now();
-    const snapshot = await exportCurrentSnapshot();
-    const exportMs = Date.now() - t0;
-    const bmCount = (snapshot.bookmarks || []).length;
-    const folderCount = (snapshot.folders || []).length;
-    await onProgress(`Snapshot: ${bmCount} bookmarks, ${folderCount} folders (${exportMs}ms)`);
 
-    await onProgress("Creating offscreen document for LLM call...");
-    await ensureOffscreenDocument();
-    await onProgress("Calling LLM via offscreen document...");
-
-    const llmPayload = {
-      apiKey: options.apiKey,
-      apiBaseUrl: options.apiBaseUrl,
-      apiStyle: options.apiStyle,
-      model: options.model,
-      maxActions: options.maxActions,
-      requestTimeoutMs: options.requestTimeoutMs,
-      maxRetries: options.maxRetries,
-      focusPath: options.focusPath,
-      userInstruction: options.userInstruction,
-      preferences: options.preferences,
-      snapshot,
-    };
-
-    const abortController = new AbortController();
-    const fakeJob = { id: `direct-generate-${Date.now()}` };
-    const result = await runLlmViaOffscreen(fakeJob, "generate", llmPayload, abortController);
-
-    await saveLastPlan(result.reviewed_plan);
-    await onProgress("AI plan generated and saved for popup restore.");
-    return result;
-  } finally {
-    void closeOffscreenDocument().catch(() => {});
-  }
-}
-
-async function reviseAiReviewedPlan(plan, options, onProgress = reportProgress) {
-  if (!plan || typeof plan !== "object" || !Array.isArray(plan.actions)) {
-    throw new Error("Load a reviewed plan before asking the LLM to revise it.");
-  }
-  try {
-    await onProgress("Exporting current bookmarks...");
-    const t0 = Date.now();
-    const snapshot = await exportCurrentSnapshot();
-    const exportMs = Date.now() - t0;
-    const bmCount = (snapshot.bookmarks || []).length;
-    const folderCount = (snapshot.folders || []).length;
-    await onProgress(`Snapshot: ${bmCount} bookmarks, ${folderCount} folders (${exportMs}ms)`);
-
-    await onProgress("Creating offscreen document for LLM call...");
-    await ensureOffscreenDocument();
-    await onProgress("Calling LLM via offscreen document...");
-
-    const llmPayload = {
-      options: {
-        apiKey: options.apiKey,
-        apiBaseUrl: options.apiBaseUrl,
-        apiStyle: options.apiStyle,
-        model: options.model,
-        maxActions: options.maxActions,
-        requestTimeoutMs: options.requestTimeoutMs,
-        maxRetries: options.maxRetries,
-        focusPath: options.focusPath,
-        userInstruction: options.userInstruction,
-        preferences: options.preferences,
-        snapshot,
-      },
-      plan,
-    };
-
-    const abortController = new AbortController();
-    const fakeJob = { id: `direct-revise-${Date.now()}` };
-    const result = await runLlmViaOffscreen(fakeJob, "revise", llmPayload, abortController);
-
-    await saveLastPlan(result.reviewed_plan);
-    await onProgress("AI plan revision saved for popup restore.");
-    return result;
-  } finally {
-    void closeOffscreenDocument().catch(() => {});
-  }
-}
 
 async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress, jobContext = null) {
   validateExecutablePlan(plan);

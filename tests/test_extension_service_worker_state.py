@@ -1499,6 +1499,231 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertIn("Could not resolve bookmark by locator", str(result["error"]))
         self.assertEqual(result["searchCalls"], [])
 
+    def test_compat_generate_ai_plan_creates_real_background_job(self):
+        """Compatibility path generate-ai-plan routes through startBackgroundJob lifecycle."""
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let jobIdsSeen = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension', lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            onMessage: {{ addListener: (callback) => {{ listener = callback; }} }}
+          }},
+          storage: {{ local: {{
+            set: (value, callback) => {{
+              Object.assign(storage, value);
+              if (value.bookmarkAdvisorActiveJob) {{
+                jobIdsSeen.push(value.bookmarkAdvisorActiveJob.id);
+              }}
+              if (callback) callback();
+            }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
+        }};
+        global.fetch = async function (url) {{
+          if (String(url).startsWith('chrome-extension://')) return {{ ok: false, json: async () => ({{}}), text: async () => '' }};
+          const payload = {{ summary: {{ overview: 'compat bg job' }}, activations: [{{ op: 'move_bookmark', node_id: '10', target: '/收藏夹栏/AI', duplicate_of_id: '', confidence: 0.91, reason: 'test' }}] }};
+          return {{ ok: true, text: async () => JSON.stringify({{ choices: [{{ text: JSON.stringify(payload) }}] }}) }};
+        }};
+        require(serviceWorkerPath);
+        new Promise((resolve, reject) => {{
+          listener({{ type: 'generate-ai-plan', options: {{ apiKey: 'test-key', apiBaseUrl: 'https://api.example.com/v1/completions', apiStyle: 'completions', model: 'test-model' }} }}, null, (response) => {{
+            if (response && response.error) reject(new Error(response.error));
+            else resolve(response);
+          }});
+        }}).then((response) => {{
+          const activeJob = storage.bookmarkAdvisorActiveJob;
+          console.log(JSON.stringify({{
+            responseActionType: response.reviewed_plan.actions[0].action_type,
+            activeJobStatus: activeJob && activeJob.status,
+            activeJobType: activeJob && activeJob.type,
+            jobIdStartsWithJob: activeJob && activeJob.id && activeJob.id.startsWith('job-'),
+            noFakeJobId: !jobIdsSeen.some((id) => id.startsWith('direct-')),
+            savedPlanActionType: storage.bookmarkAdvisorLastPlan.plan.actions[0].action_type,
+            progressMessage: storage.bookmarkAdvisorProgress.message
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["responseActionType"], "move_bookmark")
+        self.assertEqual(result["activeJobStatus"], "succeeded")
+        self.assertEqual(result["activeJobType"], "generate-ai-plan")
+        self.assertEqual(result["jobIdStartsWithJob"], True)
+        self.assertEqual(result["noFakeJobId"], True)
+        self.assertEqual(result["savedPlanActionType"], "move_bookmark")
+        self.assertEqual(result["progressMessage"], "AI plan generated and saved for popup restore.")
+
+    def test_compat_revise_ai_plan_creates_real_background_job(self):
+        """Compatibility path revise-ai-plan routes through startBackgroundJob lifecycle."""
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let jobIdsSeen = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension', lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            onMessage: {{ addListener: (callback) => {{ listener = callback; }} }}
+          }},
+          storage: {{ local: {{
+            set: (value, callback) => {{
+              Object.assign(storage, value);
+              if (value.bookmarkAdvisorActiveJob) {{
+                jobIdsSeen.push(value.bookmarkAdvisorActiveJob.id);
+              }}
+              if (callback) callback();
+            }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
+        }};
+        global.fetch = async function (url) {{
+          if (String(url).startsWith('chrome-extension://')) return {{ ok: false, json: async () => ({{}}), text: async () => '' }};
+          const payload = {{ summary: {{ overview: 'revised plan' }}, activations: [{{ op: 'move_bookmark', node_id: '10', target: '/收藏夹栏/Revised', duplicate_of_id: '', confidence: 0.95, reason: 'revised' }}] }};
+          return {{ ok: true, text: async () => JSON.stringify({{ choices: [{{ text: JSON.stringify(payload) }}] }}) }};
+        }};
+        require(serviceWorkerPath);
+        const existingPlan = {{
+          actions: [{{ action_id: 'a-1', action_type: 'move_bookmark', status: 'approved', reason: 'old', confidence: 0.5, bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com' }}, from_path: '/收藏夹栏/Loose', to_path: '/收藏夹栏/Old' }}]
+        }};
+        new Promise((resolve, reject) => {{
+          listener({{ type: 'revise-ai-plan', plan: existingPlan, options: {{ apiKey: 'test-key', apiBaseUrl: 'https://api.example.com/v1/completions', apiStyle: 'completions', model: 'test-model', userInstruction: 'Reorganize into better folders' }} }}, null, (response) => {{
+            if (response && response.error) reject(new Error(response.error));
+            else resolve(response);
+          }});
+        }}).then((response) => {{
+          const activeJob = storage.bookmarkAdvisorActiveJob;
+          console.log(JSON.stringify({{
+            responseActionType: response.reviewed_plan.actions[0].action_type,
+            responseTarget: response.reviewed_plan.actions[0].destination_path,
+            activeJobStatus: activeJob && activeJob.status,
+            activeJobType: activeJob && activeJob.type,
+            jobIdStartsWithJob: activeJob && activeJob.id && activeJob.id.startsWith('job-'),
+            noFakeJobId: !jobIdsSeen.some((id) => id.startsWith('direct-')),
+            savedPlanTarget: storage.bookmarkAdvisorLastPlan.plan.actions[0].destination_path
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["responseActionType"], "move_bookmark")
+        self.assertEqual(result["activeJobStatus"], "succeeded")
+        self.assertEqual(result["activeJobType"], "revise-ai-plan")
+        self.assertEqual(result["jobIdStartsWithJob"], True)
+        self.assertEqual(result["noFakeJobId"], True)
+
+    def test_compat_generate_ai_plan_can_be_cancelled(self):
+        """Compatibility path generate-ai-plan job is cancellable via cancel-active-job."""
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let planningFetchStarted = false;
+        let planningSignalAborted = false;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension', lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            onMessage: {{ addListener: (callback) => {{ listener = callback; }} }}
+          }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]) }}
+        }};
+        global.fetch = async function (url, options) {{
+          if (!options.signal) throw new Error('missing signal');
+          planningFetchStarted = true;
+          options.signal.addEventListener('abort', () => {{ planningSignalAborted = true; }}, {{ once: true }});
+          return await new Promise((resolve, reject) => {{
+            if (options.signal.aborted) {{
+              const error = new Error('aborted');
+              error.name = 'AbortError';
+              reject(error);
+              return;
+            }}
+            const timeoutId = setTimeout(() => reject(new Error('did not abort')), 250);
+            options.signal.addEventListener('abort', () => {{
+              clearTimeout(timeoutId);
+              const error = new Error('aborted');
+              error.name = 'AbortError';
+              reject(error);
+            }}, {{ once: true }});
+          }});
+        }};
+        function waitFor(predicate, deadlineMs = 1000) {{
+          const deadline = Date.now() + deadlineMs;
+          return new Promise((resolve, reject) => {{
+            function tick() {{
+              if (predicate()) {{ resolve(); return; }}
+              if (Date.now() > deadline) {{ reject(new Error('timed out')); return; }}
+              setTimeout(tick, 5);
+            }}
+            tick();
+          }});
+        }}
+        require(serviceWorkerPath);
+        new Promise((resolve, reject) => {{
+          listener({{ type: 'generate-ai-plan', options: {{ apiKey: 'test-key', apiBaseUrl: 'https://api.example.com/v1/completions', apiStyle: 'completions', model: 'test-model' }} }}, null, (response) => {{
+            resolve(response);
+          }});
+        }}).catch(() => {{}});  // response will be sent before cancel completes
+        // Wait for the fetch to start, then cancel
+        waitFor(() => planningFetchStarted).then(() => {{
+          return new Promise((resolve, reject) => {{
+            listener({{ type: 'cancel-active-job' }}, null, (cancelResponse) => {{
+              resolve(cancelResponse);
+            }});
+          }});
+        }}).then((cancelResponse) => {{
+          return waitFor(() => storage.bookmarkAdvisorActiveJob && storage.bookmarkAdvisorActiveJob.status !== 'running').then(() => cancelResponse);
+        }}).then((cancelResponse) => {{
+          console.log(JSON.stringify({{
+            cancelResponse,
+            finalStatus: storage.bookmarkAdvisorActiveJob.status,
+            finalProgress: storage.bookmarkAdvisorActiveJob.progress,
+            planningSignalAborted
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["cancelResponse"], {"cancelled": True})
+        self.assertEqual(result["finalStatus"], "failed")
+        self.assertEqual(result["finalProgress"], "Cancelled by user.")
+        self.assertEqual(result["planningSignalAborted"], True)
+
 
 if __name__ == "__main__":
     _ = unittest.main()
