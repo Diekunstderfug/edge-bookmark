@@ -192,7 +192,7 @@ function offscreenHardTimeoutMs(mode, payload) {
   );
   const lintPasses = lintRetries + 1;
   const endpointAttempts = requestAttemptCountForOptions(options);
-  return (requestTimeoutMs * lintPasses * endpointAttempts) + OFFSCREEN_DEADLINE_GRACE_MS;
+  return (2 * requestTimeoutMs * lintPasses * endpointAttempts) + OFFSCREEN_DEADLINE_GRACE_MS;
 }
 
 // 通过 offscreen document 执行 LLM 调用，返回 Promise
