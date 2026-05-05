@@ -1409,6 +1409,50 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertIn("requires the folder to be empty", str(result["error"]))
         self.assertEqual(result["removeCalls"], 0)
 
+    def test_missing_bookmark_title_does_not_trigger_broad_search(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        const searchCalls = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (_id, callback) => callback([]),
+            search: (query, callback) => {{ searchCalls.push(query); callback([]); }},
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [] }}] }}])
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'move_bookmark',
+          status: 'approved',
+          reason: 'missing locator title should not broaden search',
+          confidence: 0.9,
+          bookmark_locator: {{ id: 'missing', folder_path: '/收藏夹栏' }},
+          to_path: '/收藏夹栏/AI'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            error: response.failures[0] && response.failures[0].error,
+            searchCalls
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertIn("Could not resolve bookmark by locator", str(result["error"]))
+        self.assertEqual(result["searchCalls"], [])
+
 
 if __name__ == "__main__":
     _ = unittest.main()

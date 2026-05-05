@@ -1371,6 +1371,8 @@ async function resolveFolderId(action) {
 async function resolveBookmarkId(action) {
   const locator = action.bookmark_locator || {};
   const candidateId = locator.id || action.bookmark_id || "";
+  const hasTitle = typeof locator.title === "string" && locator.title.length > 0;
+  const hasStrongLocator = Boolean(locator.url || locator.normalized_url || hasTitle);
   if (candidateId) {
     let nodes = null;
     try {
@@ -1383,6 +1385,9 @@ async function resolveBookmarkId(action) {
         return candidateId;
       }
       throw new Error("Bookmark locator id did not match the current bookmark metadata");
+    }
+    if (!hasStrongLocator) {
+      return "";
     }
   }
 
@@ -1397,7 +1402,12 @@ async function resolveBookmarkId(action) {
     }
   }
 
-  const allMatches = await bookmarkSearch({ title: locator.title || "" });
+  const searchQuery = hasTitle ? { title: locator.title } : locator.normalized_url ? { url: locator.normalized_url } : null;
+  if (!searchQuery) {
+    return "";
+  }
+
+  const allMatches = await bookmarkSearch(searchQuery);
   for (const node of allMatches) {
     if (!node.url) {
       continue;
