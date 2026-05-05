@@ -1038,6 +1038,9 @@ function jobProgress(job, message) {
 async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress, jobContext = null) {
   validateExecutablePlan(plan);
 
+  const stopOnFailure = (plan.summary && plan.summary.stop_on_failure === true) ||
+                        (plan.details && plan.details.stop_on_failure === true);
+
   const executionId = `exec-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const grouped = new Map(EXECUTION_ORDER.map((actionType) => [actionType, []]));
   for (const action of plan.actions) {
@@ -1057,6 +1060,7 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress,
   await assertJobNotCancelled(jobContext);
   await onProgress("Starting plan execution...");
 
+  let stoppedOnFailure = false;
   for (const actionType of EXECUTION_ORDER) {
     for (const action of grouped.get(actionType)) {
       await assertJobNotCancelled(jobContext);
@@ -1077,10 +1081,15 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress,
           error: error.message || String(error),
           executed_at: executedAt,
         });
+        if (stopOnFailure) {
+          stoppedOnFailure = true;
+          break;
+        }
       }
       await onProgress(`Executing action ${succeeded.length + failures.length}/${totalActions}...`);
       await assertJobNotCancelled(jobContext);
     }
+    if (stoppedOnFailure) break;
   }
 
   const report = {

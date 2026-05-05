@@ -2036,5 +2036,269 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["planningSignalAborted"], True)
 
 
+    def test_stop_on_failure_true_stops_after_first_failure(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback({{
+              '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
+              '2': [{{ id: '2', title: 'X', parentId: '1' }}],
+              '10': [{{ id: '10', title: 'A', url: 'https://a.com/', parentId: '1' }}],
+              '11': [{{ id: '11', title: 'B', url: 'https://b.com/', parentId: '1' }}],
+              '12': [{{ id: '12', title: 'C', url: 'https://c.com/', parentId: '1' }}]
+            }}[id] || []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [
+              {{ id: '2', title: 'X', children: [] }},
+              {{ id: '10', title: 'A', url: 'https://a.com/' }},
+              {{ id: '11', title: 'B', url: 'https://b.com/' }},
+              {{ id: '12', title: 'C', url: 'https://c.com/' }}
+            ] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{
+              moveCalls.push({{ id, parentId: opts.parentId }});
+              if (id === '10') {{ throw new Error('simulated move failure'); }}
+              if (callback) callback();
+            }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{
+          summary: {{ stop_on_failure: true }},
+          actions: [{{
+            action_id: 'a-1', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '10', title: 'A', url: 'https://a.com/', normalized_url: 'https://a.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}, {{
+            action_id: 'a-2', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '11', title: 'B', url: 'https://b.com/', normalized_url: 'https://b.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}, {{
+            action_id: 'a-3', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '12', title: 'C', url: 'https://c.com/', normalized_url: 'https://c.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}]
+        }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            failedId: response.failures[0].actionId,
+            moveCalls: moveCalls.length
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 0)
+        self.assertEqual(result["failures"], 1)
+        self.assertEqual(result["failedId"], "a-1")
+        self.assertEqual(result["moveCalls"], 1)
+
+    def test_default_continues_after_failure_without_stop_on_failure(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback({{
+              '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
+              '2': [{{ id: '2', title: 'X', parentId: '1' }}],
+              '10': [{{ id: '10', title: 'A', url: 'https://a.com/', parentId: '1' }}],
+              '11': [{{ id: '11', title: 'B', url: 'https://b.com/', parentId: '1' }}]
+            }}[id] || []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [
+              {{ id: '2', title: 'X', children: [] }},
+              {{ id: '10', title: 'A', url: 'https://a.com/' }},
+              {{ id: '11', title: 'B', url: 'https://b.com/' }}
+            ] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{
+              moveCalls.push({{ id, parentId: opts.parentId }});
+              if (id === '10') {{ throw new Error('simulated move failure'); }}
+              if (callback) callback();
+            }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{
+          actions: [{{
+            action_id: 'a-1', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '10', title: 'A', url: 'https://a.com/', normalized_url: 'https://a.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}, {{
+            action_id: 'a-2', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '11', title: 'B', url: 'https://b.com/', normalized_url: 'https://b.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}]
+        }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            moveCalls: moveCalls.length
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 1)
+        self.assertEqual(result["moveCalls"], 2)
+
+    def test_stop_on_failure_in_details_stops_after_first_failure(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback({{
+              '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
+              '2': [{{ id: '2', title: 'X', parentId: '1' }}],
+              '10': [{{ id: '10', title: 'A', url: 'https://a.com/', parentId: '1' }}],
+              '11': [{{ id: '11', title: 'B', url: 'https://b.com/', parentId: '1' }}]
+            }}[id] || []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [
+              {{ id: '2', title: 'X', children: [] }},
+              {{ id: '10', title: 'A', url: 'https://a.com/' }},
+              {{ id: '11', title: 'B', url: 'https://b.com/' }}
+            ] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{
+              moveCalls.push({{ id, parentId: opts.parentId }});
+              if (id === '10') {{ throw new Error('simulated move failure'); }}
+              if (callback) callback();
+            }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{
+          details: {{ stop_on_failure: true }},
+          actions: [{{
+            action_id: 'a-1', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '10', title: 'A', url: 'https://a.com/', normalized_url: 'https://a.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}, {{
+            action_id: 'a-2', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '11', title: 'B', url: 'https://b.com/', normalized_url: 'https://b.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}]
+        }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            moveCalls: moveCalls.length
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 0)
+        self.assertEqual(result["failures"], 1)
+        self.assertEqual(result["moveCalls"], 1)
+
+    def test_truthy_non_boolean_stop_on_failure_continues_after_failure(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback({{
+              '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
+              '2': [{{ id: '2', title: 'X', parentId: '1' }}],
+              '10': [{{ id: '10', title: 'A', url: 'https://a.com/', parentId: '1' }}],
+              '11': [{{ id: '11', title: 'B', url: 'https://b.com/', parentId: '1' }}]
+            }}[id] || []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [
+              {{ id: '2', title: 'X', children: [] }},
+              {{ id: '10', title: 'A', url: 'https://a.com/' }},
+              {{ id: '11', title: 'B', url: 'https://b.com/' }}
+            ] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{
+              moveCalls.push({{ id, parentId: opts.parentId }});
+              if (id === '10') {{ throw new Error('simulated move failure'); }}
+              if (callback) callback();
+            }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{
+          summary: {{ stop_on_failure: 'false' }},
+          actions: [{{
+            action_id: 'a-1', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '10', title: 'A', url: 'https://a.com/', normalized_url: 'https://a.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}, {{
+            action_id: 'a-2', action_type: 'move_bookmark', status: 'approved', reason: 'r', confidence: 0.9,
+            bookmark_locator: {{ id: '11', title: 'B', url: 'https://b.com/', normalized_url: 'https://b.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏', to_path: '/收藏夹栏/X'
+          }}]
+        }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            moveCalls: moveCalls.length
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 1)
+        self.assertEqual(result["moveCalls"], 2)
+
+
 if __name__ == "__main__":
     _ = unittest.main()
