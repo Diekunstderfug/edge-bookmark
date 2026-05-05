@@ -164,7 +164,9 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           console.log(JSON.stringify({{
             startedStatus,
             finalStatus: finalJob.status,
-            resultActionType: finalJob.result.reviewed_plan.actions[0].action_type,
+            hasResultInStorage: 'result' in finalJob,
+            resultSummaryType: finalJob.result_summary && finalJob.result_summary.type,
+            resultSummaryActionCount: finalJob.result_summary && finalJob.result_summary.action_count,
             savedActionType: storage.bookmarkAdvisorLastPlan.plan.actions[0].action_type
           }}));
         }}).catch((error) => {{
@@ -175,7 +177,9 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         result = cast(dict[str, object], self._node_script(script))
         self.assertEqual(result["startedStatus"], "running")
         self.assertEqual(result["finalStatus"], "succeeded")
-        self.assertEqual(result["resultActionType"], "move_bookmark")
+        self.assertFalse(result["hasResultInStorage"], "active job storage should not contain full result")
+        self.assertEqual(result["resultSummaryType"], "plan")
+        self.assertEqual(result["resultSummaryActionCount"], 1)
         self.assertEqual(result["savedActionType"], "move_bookmark")
 
     def test_cancel_active_job_aborts_inflight_ai_job_and_persists_cancelled_state(self):

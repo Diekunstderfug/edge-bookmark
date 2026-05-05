@@ -458,13 +458,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({ error: bgResponse.error });
           return;
         }
-        return waitForBackgroundJobCompletion(bgResponse.job.id).then((finalJob) => {
+        return waitForBackgroundJobCompletion(bgResponse.job.id).then(async (finalJob) => {
           if (finalJob.status === "failed") {
             reportProgress(`AI planning failed: ${finalJob.error || finalJob.progress}`);
             sendResponse({ error: finalJob.error || finalJob.progress });
             return;
           }
-          sendResponse(finalJob.result);
+          const lastPlanData = await chromeStorageGet(globalThis.LAST_PLAN_STORAGE_NAME);
+          sendResponse(lastPlanData ? { reviewed_plan: lastPlanData.plan } : null);
         });
       })
       .catch((error) => {
@@ -482,13 +483,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({ error: bgResponse.error });
           return;
         }
-        return waitForBackgroundJobCompletion(bgResponse.job.id).then((finalJob) => {
+        return waitForBackgroundJobCompletion(bgResponse.job.id).then(async (finalJob) => {
           if (finalJob.status === "failed") {
             reportProgress(`AI plan revision failed: ${finalJob.error || finalJob.progress}`);
             sendResponse({ error: finalJob.error || finalJob.progress });
             return;
           }
-          sendResponse(finalJob.result);
+          const lastPlanData = await chromeStorageGet(globalThis.LAST_PLAN_STORAGE_NAME);
+          sendResponse(lastPlanData ? { reviewed_plan: lastPlanData.plan } : null);
         });
       })
       .catch((error) => {
@@ -591,12 +593,17 @@ async function runApplyReviewedPlanForeground(payload) {
 
 async function runForegroundBackgroundJob(job, payload, jobAbortController) {
   await saveActiveJob(job);
+  let fullResult = null;
   try {
-    await runBackgroundJob(job, payload, jobAbortController);
+    fullResult = await runBackgroundJob(job, payload, jobAbortController);
   } catch (error) {
     await failJob(job, error.message || String(error));
   }
-  return (await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME)) || job;
+  const savedJob = (await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME)) || job;
+  if (fullResult && savedJob.status === "succeeded") {
+    savedJob.result = fullResult;
+  }
+  return savedJob;
 }
 
 async function runDetachedBackgroundJob(job, payload, jobAbortController) {
@@ -653,14 +660,32 @@ async function runDirectMutatingOperation(jobType, callback) {
 async function getActiveJobForPopup() {
   const recovered = await recoverPersistedOffscreenResult("Restored from offscreen after popup wake.");
   if (recovered) {
-    return recovered;
+    return enrichJobWithFullResult(recovered);
   }
   const job = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
   if (isStaleRunningJob(job)) {
     const failed = await failJob(job, "Background job timed out before completion.");
     return failed;
   }
-  return job || null;
+  return enrichJobWithFullResult(job);
+}
+
+async function enrichJobWithFullResult(job) {
+  if (!job || job.status !== "succeeded" || job.result) {
+    return job;
+  }
+  if (job.result_summary && job.result_summary.type === "plan") {
+    const lastPlanData = await chromeStorageGet(globalThis.LAST_PLAN_STORAGE_NAME);
+    if (lastPlanData && lastPlanData.plan) {
+      return { ...job, result: { reviewed_plan: lastPlanData.plan } };
+    }
+  } else if (job.result_summary && job.result_summary.type === "report") {
+    const lastReport = await chromeStorageGet(globalThis.LAST_REPORT_STORAGE_NAME);
+    if (lastReport) {
+      return { ...job, result: lastReport };
+    }
+  }
+  return job;
 }
 
 function isFreshRunningJob(job) {
@@ -749,21 +774,20 @@ async function runBackgroundJob(job, payload, jobAbortController) {
   try {
     const onProgress = (message) => jobProgress(job, message);
     if (job.type === "generate-ai-plan") {
-      await runGenerateAiPlan(job, payload, jobAbortController, onProgress);
-      return;
+      return await runGenerateAiPlan(job, payload, jobAbortController, onProgress);
     }
     if (job.type === "revise-ai-plan") {
-      await runReviseAiPlan(job, payload, jobAbortController, onProgress);
-      return;
+      return await runReviseAiPlan(job, payload, jobAbortController, onProgress);
     }
     if (job.type === "apply-reviewed-plan") {
       const result = await executeReviewedPlan(payload.plan, payload.focusPath || "", onProgress, { id: job.id });
       await finishJob(job, result, "Execution complete.");
+      return result;
     }
   } catch (error) {
     if (isAbortLikeError(error)) {
       await failJob(job, "Cancelled by user.");
-      return;
+      return null;
     }
     throw error;
   } finally {
@@ -814,6 +838,7 @@ async function runGenerateAiPlan(job, payload, controller, onProgress) {
   await onProgress("AI plan generated and saved for popup restore.");
   await finishJob(job, result, "AI plan generated.");
   swLog(`[BookmarkAdvisor][SW] runGenerateAiPlan complete`);
+  return result;
 }
 
 async function runReviseAiPlan(job, payload, controller, onProgress) {
@@ -862,6 +887,7 @@ async function runReviseAiPlan(job, payload, controller, onProgress) {
   await onProgress("AI plan revision saved for popup restore.");
   await finishJob(job, result, "AI plan revision complete.");
   swLog(`[BookmarkAdvisor][SW] runReviseAiPlan complete`);
+  return result;
 }
 
 async function finishJob(job, result, progress) {
@@ -877,10 +903,28 @@ async function finishJob(job, result, progress) {
     ...job,
     status: "succeeded",
     progress,
-    result,
+    result_summary: summarizeJobResult(result),
     updated_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),
   });
+}
+
+function summarizeJobResult(result) {
+  if (!result) return null;
+  if (result.reviewed_plan) {
+    return {
+      type: "plan",
+      action_count: (result.reviewed_plan.actions || []).length,
+    };
+  }
+  if (Array.isArray(result.succeeded) || Array.isArray(result.failures)) {
+    return {
+      type: "report",
+      succeeded_count: (result.succeeded || []).length,
+      failure_count: (result.failures || []).length,
+    };
+  }
+  return null;
 }
 
 function saveActiveJob(job) {
