@@ -1246,9 +1246,11 @@ async function applyAction(action, focusPath, executionId) {
       if (!action.target_path) {
         throw new Error("create_folder requires target_path");
       }
-      const createdId = await ensureFolderPath(action.target_path);
+      const folderResult = await ensureFolderPath(action.target_path);
       if (executionId) {
-        await recordUndo(executionId, action, { id: createdId, title: action.target_path.split("/").pop() }, UNDO_DELETE_FOLDER);
+        for (const folder of folderResult.createdFolders) {
+          await recordUndo(executionId, action, folder, UNDO_DELETE_FOLDER);
+        }
       }
       return;
     }
@@ -1297,7 +1299,7 @@ async function applyAction(action, focusPath, executionId) {
         throw new Error("move_folder destination must not be the source folder or its descendant");
       }
       const [srcNode] = await bookmarkCall("get", srcFolderId);
-      const destFolderId = await ensureFolderPath(action.to_path);
+      const destFolderId = (await ensureFolderPath(action.to_path)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: srcFolderId, parentId: srcNode.parentId, title: srcNode.title }, UNDO_MOVE);
       }
@@ -1313,7 +1315,7 @@ async function applyAction(action, focusPath, executionId) {
         throw new Error("Could not resolve bookmark by locator");
       }
       const [node] = await bookmarkCall("get", bookmarkId);
-      const destinationFolderId = await ensureFolderPath(action.to_path);
+      const destinationFolderId = (await ensureFolderPath(action.to_path)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: bookmarkId, parentId: node.parentId, title: node.title, url: node.url || null }, UNDO_MOVE);
       }
@@ -1326,7 +1328,7 @@ async function applyAction(action, focusPath, executionId) {
         throw new Error("Could not resolve bookmark by locator");
       }
       const [dupNode] = await bookmarkCall("get", dupBookmarkId);
-      const quarantineFolderId = await ensureFolderPath(QUARANTINE_FOLDER_PATH);
+      const quarantineFolderId = (await ensureFolderPath(QUARANTINE_FOLDER_PATH)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: dupBookmarkId, parentId: dupNode.parentId, title: dupNode.title, url: dupNode.url || null }, UNDO_MOVE);
       }
@@ -1470,6 +1472,7 @@ async function ensureFolderPath(folderPath) {
   if (parts.length === 0) {
     throw new Error("folder path must not be empty");
   }
+  const createdFolders = [];
 
   const tree = await bookmarkCall("getTree");
   const root = tree[0];
@@ -1478,7 +1481,8 @@ async function ensureFolderPath(folderPath) {
     throw new Error(`Could not resolve root folder: ${parts[0]}`);
   }
 
-  for (const part of parts.slice(1)) {
+  for (let index = 1; index < parts.length; index += 1) {
+    const part = parts[index];
     let next = (current.children || []).find(
       (node) => !node.url && node.title === part,
     );
@@ -1493,11 +1497,17 @@ async function ensureFolderPath(folderPath) {
         parentId: current.id,
         title: part,
       });
+      createdFolders.push({
+        id: next.id,
+        parentId: current.id,
+        title: next.title || part,
+        path: `/${parts.slice(0, index + 1).join("/")}`,
+      });
     }
     current = next;
   }
 
-  return current.id;
+  return { id: current.id, createdFolders };
 }
 
 function resolvePathToFolderId(root, folderPath) {

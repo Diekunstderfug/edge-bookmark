@@ -1124,6 +1124,130 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["undoMoveCalls"], 2)
         self.assertEqual(result["restoredTo"], "1")
 
+    def test_create_folder_existing_path_does_not_record_delete_undo(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let createCalls = 0;
+        let removeCalls = 0;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'AI', children: [] }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (_opts, callback) => {{ createCalls += 1; callback({{ id: 'unexpected' }}); }},
+            remove: (_id, callback) => {{ removeCalls += 1; if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'create_folder',
+          status: 'approved',
+          reason: 'already exists',
+          confidence: 0.9,
+          target_path: '/收藏夹栏/AI'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            createCalls,
+            removeCalls,
+            undoLogLength: (storage.bookmarkAdvisorUndoLog || []).length
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["createCalls"], 0)
+        self.assertEqual(result["removeCalls"], 0)
+        self.assertEqual(result["undoLogLength"], 0)
+
+    def test_create_folder_nested_records_only_created_folders_for_reverse_undo(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        const removed = [];
+        const nodes = {{
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0', children: [] }}
+        }};
+        let nextId = 2;
+        function childrenOf(parentId) {{
+          return Object.values(nodes).filter((node) => node.parentId === parentId);
+        }}
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ ...nodes['1'], children: childrenOf('1') }}] }}]),
+            getChildren: (id, callback) => callback(childrenOf(id)),
+            create: (opts, callback) => {{
+              const id = `c${{nextId++}}`;
+              nodes[id] = {{ id, title: opts.title, parentId: opts.parentId, children: [] }};
+              callback(nodes[id]);
+            }},
+            remove: (id, callback) => {{ removed.push(id); delete nodes[id]; if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        new Promise((resolve) => {{
+          listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+            action_id: 'a-1',
+            action_type: 'create_folder',
+            status: 'approved',
+            reason: 'create nested path',
+            confidence: 0.9,
+            target_path: '/收藏夹栏/New/Child'
+          }}] }} }}, null, (response) => resolve(response));
+        }}).then((response) => new Promise((resolve) => {{
+          const undoLog = storage.bookmarkAdvisorUndoLog || [];
+          listener({{ type: 'undo-last-execution' }}, null, (undoResponse) => resolve({{ response, undoLog, undoResponse }}));
+        }})).then(({{ response, undoLog, undoResponse }}) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            undoLogLength: undoLog.length,
+            undoIds: undoLog.map((entry) => entry.undo_action.id),
+            undoTypes: undoLog.map((entry) => entry.undo_action.type),
+            undoCount: undoResponse.count,
+            removed
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["undoLogLength"], 2)
+        self.assertEqual(result["undoIds"], ["c2", "c3"])
+        self.assertEqual(result["undoTypes"], ["delete_folder", "delete_folder"])
+        self.assertEqual(result["undoCount"], 2)
+        self.assertEqual(result["removed"], ["c3", "c2"])
+
     def test_agreed_keep_for_review_executes_as_noop_report_entry(self):
         script = f"""
         const path = require('path');
