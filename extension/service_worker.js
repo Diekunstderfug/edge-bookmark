@@ -326,6 +326,11 @@ async function cleanupStaleActiveJobOnStartup() {
     const isResumableStage = ["export", "llm", "prompt_build"].includes(stage);
     const isFresh = !isStartupStaleRunningJob(activeJob);
 
+    if (stage === "llm" && isFresh) {
+      await verifyOffscreenLlmJob(activeJob);
+      return;
+    }
+
     if (isResumableStage && isFresh) {
       // 保留 running 状态，让 popup 打开时尝试恢复
       return;
@@ -361,6 +366,37 @@ async function recoverPersistedOffscreenResult(progress) {
     return null;
   }
   return consumeOffscreenResultPayload(offscreenResult, progress, { removeStoredResult: true });
+}
+
+async function verifyOffscreenLlmJob(job) {
+  if (!job || job.status !== "running" || (job.stage || "") !== "llm") {
+    return { verified: true, job };
+  }
+
+  if (!chrome.runtime || typeof chrome.runtime.sendMessage !== "function") {
+    const failed = await failJob(job, "Offscreen document is unavailable.");
+    return { verified: false, job: failed };
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "offscreen-ping" });
+    if (!response || response.ok !== true) {
+      const failed = await failJob(job, response?.error || "Offscreen document did not respond.");
+      return { verified: false, job: failed };
+    }
+    if (response.busy && response.jobId === job.id) {
+      return { verified: true, job };
+    }
+
+    const failureMessage = response.busy
+      ? `Offscreen document is busy with another job${response.jobId ? ` (${response.jobId})` : ""}.`
+      : "Offscreen document is no longer running this job.";
+    const failed = await failJob(job, failureMessage);
+    return { verified: false, job: failed };
+  } catch (error) {
+    const failed = await failJob(job, error.message || String(error));
+    return { verified: false, job: failed };
+  }
 }
 
 async function consumeOffscreenCompletionMessage(message) {
@@ -666,6 +702,10 @@ async function getActiveJobForPopup() {
   if (isStaleRunningJob(job)) {
     const failed = await failJob(job, "Background job timed out before completion.");
     return failed;
+  }
+  if (job && job.status === "running" && (job.stage || "") === "llm") {
+    const verified = await verifyOffscreenLlmJob(job);
+    return verified.job;
   }
   return enrichJobWithFullResult(job);
 }

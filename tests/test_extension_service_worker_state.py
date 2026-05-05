@@ -379,6 +379,45 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertTrue(str(result["startedAt"]))
         self.assertTrue(str(result["updatedAt"]))
 
+    def test_startup_cleanup_fails_fresh_llm_running_job_when_offscreen_ping_fails(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{ bookmarkAdvisorActiveJob: {{ id: 'job-llm', type: 'generate-ai-plan', status: 'running', stage: 'llm', started_at: new Date().toISOString(), updated_at: new Date().toISOString(), progress: 'Calling LLM via offscreen document...' }} }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension',
+            lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            sendMessage: async () => {{ throw new Error('offscreen missing'); }},
+            onMessage: {{ addListener: () => {{}} }}
+          }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }}
+        }};
+        require(serviceWorkerPath);
+        setTimeout(() => {{
+          console.log(JSON.stringify({{
+            status: storage.bookmarkAdvisorActiveJob.status,
+            progress: storage.bookmarkAdvisorActiveJob.progress,
+            error: storage.bookmarkAdvisorActiveJob.error,
+            finishedAt: storage.bookmarkAdvisorActiveJob.finished_at
+          }}));
+        }}, 25);
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["progress"], "offscreen missing")
+        self.assertEqual(result["error"], "offscreen missing")
+        self.assertTrue(str(result["finishedAt"]))
+
     def test_get_active_job_consumes_late_persisted_offscreen_result(self):
         script = f"""
         const path = require('path');
@@ -390,7 +429,13 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
         }};
         global.chrome = {{
-          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          runtime: {{
+            id: 'test-extension',
+            lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            sendMessage: async () => ({{ ok: true, busy: true, jobId: 'job-late' }}),
+            onMessage: {{ addListener: (callback) => {{ listener = callback; }} }}
+          }},
           storage: {{ local: {{
             set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
             get: (key, callback) => callback({{ [key]: storage[key] }}),
@@ -421,6 +466,52 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["progress"], "Restored from offscreen after popup wake.")
         self.assertEqual(result["savedActionType"], "move_bookmark")
         self.assertEqual(result["resultCleared"], True)
+
+    def test_get_active_job_keeps_running_llm_job_when_offscreen_ping_matches_job(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{ bookmarkAdvisorActiveJob: {{ id: 'job-llm-popup', type: 'generate-ai-plan', status: 'running', stage: 'llm', started_at: new Date().toISOString(), updated_at: new Date().toISOString(), progress: 'Calling LLM via offscreen document...' }} }};
+        let listener = null;
+        const sentMessages = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension',
+            lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            sendMessage: async (message) => {{ sentMessages.push(message); return {{ ok: true, busy: true, jobId: 'job-llm-popup' }}; }},
+            onMessage: {{ addListener: (callback) => {{ listener = callback; }} }}
+          }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
+          }} }},
+          bookmarks: {{ getTree: () => {{ throw new Error('popup lookup should not touch bookmarks'); }} }}
+        }};
+        require(serviceWorkerPath);
+        setTimeout(() => {{
+          listener({{ type: 'get-active-job' }}, null, (response) => {{
+            console.log(JSON.stringify({{
+              status: response.job.status,
+              stage: response.job.stage,
+              storedStatus: storage.bookmarkAdvisorActiveJob.status,
+              pingType: sentMessages[0] && sentMessages[0].type,
+              pingCount: sentMessages.length
+            }}));
+          }});
+        }}, 25);
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["stage"], "llm")
+        self.assertEqual(result["storedStatus"], "running")
+        self.assertEqual(result["pingType"], "offscreen-ping")
+        self.assertEqual(result["pingCount"], 2)
 
     def test_get_active_job_clears_matching_persisted_result_for_non_running_job(self):
         script = f"""
