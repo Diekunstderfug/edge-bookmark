@@ -421,15 +421,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "apply-reviewed-plan") {
-    runDirectMutatingOperation("apply-reviewed-plan", () => executeReviewedPlan(message.plan, message.focusPath || "", reportProgress))
-      .then((result) => sendResponse(result))
+    runApplyReviewedPlanForeground({ plan: message.plan, focusPath: message.focusPath || "" })
+      .then((job) => {
+        if (job && job.status === "succeeded" && job.result) {
+          sendResponse(job.result);
+          return;
+        }
+        const error = (job && (job.error || job.progress)) || "Execution failed.";
+        reportProgress(`Execution failed: ${error}`);
+        sendResponse(executionFailureReport(error));
+      })
       .catch((error) => {
         reportProgress(`Execution failed: ${error.message || String(error)}`);
-        sendResponse({
-          succeeded: [],
-          failures: [{ actionType: "plan", error: error.message || String(error) }],
-          executed_at: new Date().toISOString(),
-        });
+        sendResponse(executionFailureReport(error.message || String(error)));
       });
     return true;
   }
@@ -566,11 +570,48 @@ async function startBackgroundJob(jobType, payload) {
     updated_at: new Date().toISOString(),
   };
   runningJobId = job.id;
-  void saveActiveJob(job).then(() => runBackgroundJob(job, payload, jobAbortController)).catch((error) => {
-    void failJob(job, error.message || String(error));
-    clearRunningJobState(job.id, jobAbortController);
-  });
+  if (jobType === "apply-reviewed-plan") {
+    const finalJob = await runForegroundBackgroundJob(job, payload, jobAbortController);
+    return { job: finalJob };
+  }
+  void runDetachedBackgroundJob(job, payload, jobAbortController);
   return { job };
+}
+
+async function runApplyReviewedPlanForeground(payload) {
+  const response = await startBackgroundJob("apply-reviewed-plan", payload);
+  if (response.error) {
+    throw new Error(response.error);
+  }
+  return response.job || null;
+}
+
+async function runForegroundBackgroundJob(job, payload, jobAbortController) {
+  await saveActiveJob(job);
+  try {
+    await runBackgroundJob(job, payload, jobAbortController);
+  } catch (error) {
+    await failJob(job, error.message || String(error));
+  }
+  return (await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME)) || job;
+}
+
+async function runDetachedBackgroundJob(job, payload, jobAbortController) {
+  try {
+    await saveActiveJob(job);
+    await runBackgroundJob(job, payload, jobAbortController);
+  } catch (error) {
+    await failJob(job, error.message || String(error));
+    clearRunningJobState(job.id, jobAbortController);
+  }
+}
+
+function executionFailureReport(error) {
+  return {
+    succeeded: [],
+    failures: [{ actionType: "plan", error }],
+    executed_at: new Date().toISOString(),
+  };
 }
 
 async function waitForBackgroundJobCompletion(jobId, pollIntervalMs = 50, deadlineMs = 300000) {
