@@ -187,16 +187,28 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         let listener = null;
         let planningSignalAborted = false;
         let planningFetchStarted = false;
+        const offscreenMessages = [];
+        let closeDocumentCalls = 0;
         global.importScripts = function (...files) {{
           for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
         }};
         global.chrome = {{
-          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          runtime: {{
+            id: 'test-extension',
+            lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            sendMessage: async (message) => {{ offscreenMessages.push(message); return {{ ok: true }}; }},
+            getContexts: async () => [{{ contextType: 'OFFSCREEN_DOCUMENT' }}],
+            onMessage: {{ addListener: (callback) => {{ listener = callback; }} }}
+          }},
           storage: {{ local: {{
             set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          offscreen: {{
+            closeDocument: async () => {{ closeDocumentCalls += 1; }}
+          }},
           bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
         }};
         global.fetch = async function (url, options) {{
@@ -269,7 +281,9 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             finalProgress: storage.bookmarkAdvisorActiveJob.progress,
             finalError: storage.bookmarkAdvisorActiveJob.error,
             planningSignalAborted,
-            progressCleared: storage.bookmarkAdvisorProgress === null
+            progressCleared: storage.bookmarkAdvisorProgress === null,
+            offscreenCancelType: offscreenMessages[0] && offscreenMessages[0].type,
+            closeDocumentCalls
           }}));
         }}).catch((error) => {{
           console.error(error && error.stack ? error.stack : String(error));
@@ -284,6 +298,8 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["finalError"], "Cancelled by user.")
         self.assertEqual(result["planningSignalAborted"], True)
         self.assertEqual(result["progressCleared"], True)
+        self.assertEqual(result["offscreenCancelType"], "offscreen-cancel")
+        self.assertGreaterEqual(cast(int, result["closeDocumentCalls"]), 1)
 
     def test_startup_cleanup_fails_stale_running_job_on_load(self):
         script = f"""

@@ -724,7 +724,18 @@ async function cancelActiveJob() {
   if (activeJob && activeJob.status === "running") {
     await failJob({ ...activeJob, cancellation_requested_at: new Date().toISOString() }, "Cancelled by user.");
   }
+  const offscreenCancelAttempt = Promise.resolve()
+    .then(() => {
+      if (!chrome.runtime || typeof chrome.runtime.sendMessage !== "function") {
+        return null;
+      }
+      return chrome.runtime.sendMessage({ type: "offscreen-cancel" });
+    })
+    .catch(() => {});
+  const offscreenCleanupAttempt = closeOffscreenDocument().catch(() => {});
   await Promise.all([
+    offscreenCancelAttempt,
+    offscreenCleanupAttempt,
     chromeStorageSet("bookmarkAdvisorProgress", null).catch(() => {}),
   ]);
   return { cancelled: true };
