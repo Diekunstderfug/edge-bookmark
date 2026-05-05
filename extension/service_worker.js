@@ -1144,8 +1144,13 @@ function checkActionPolicy(action, focusPath) {
       }
       return { allowed: true };
     }
-    case "remove_duplicate":
+    case "remove_duplicate": {
+      const fromPath = action.from_path || (action.bookmark_locator || {}).folder_path || "";
+      if (fromPath && !pathWithinScope(fromPath, focusPath)) {
+        return { allowed: false, reason: `remove_duplicate source ${fromPath} is outside focus scope ${focusPath}` };
+      }
       return { allowed: true };
+    }
     case "delete_empty_folder": {
       const fromPath = action.from_path || (action.folder_locator || {}).path || "";
       if (fromPath && !pathWithinScope(fromPath, focusPath)) {
@@ -1328,6 +1333,10 @@ async function applyAction(action, focusPath, executionId) {
         throw new Error("Could not resolve bookmark by locator");
       }
       const [dupNode] = await bookmarkCall("get", dupBookmarkId);
+      const sourcePath = action.from_path || (action.bookmark_locator || {}).folder_path || (await nodeParentPath(dupNode.parentId));
+      if (focusPath && !pathWithinScope(sourcePath, focusPath)) {
+        throw new Error(`remove_duplicate source ${sourcePath} is outside focus scope ${focusPath}`);
+      }
       const quarantineFolderId = (await ensureFolderPath(QUARANTINE_FOLDER_PATH)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: dupBookmarkId, parentId: dupNode.parentId, title: dupNode.title, url: dupNode.url || null }, UNDO_MOVE);

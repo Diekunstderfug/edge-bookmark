@@ -986,16 +986,16 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             getChildren: (_id, callback) => callback([]),
             create: (opts, callback) => callback({{ id: 'q1', title: opts.title, parentId: opts.parentId }}),
             move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
-          }}
+        }}
         }};
         require(serviceWorkerPath);
-        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+        listener({{ type: 'apply-reviewed-plan', focusPath: '/收藏夹栏', plan: {{ actions: [{{
           action_id: 'a-1',
           action_type: 'remove_duplicate',
           status: 'approved',
           reason: 'dedupe',
           confidence: 0.9,
-          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }}
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/' }}
         }}] }} }}, null, (response) => {{
           console.log(JSON.stringify({{ succeeded: response.succeeded.length, removeCalls, moveCalls }}));
         }});
@@ -1004,6 +1004,52 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["removeCalls"], 0)
         self.assertEqual(result["moveCalls"], [{"id": "10", "parentId": "q1"}])
+
+    def test_remove_duplicate_outside_focus_path_is_blocked(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        let createCalls = 0;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(id === '10' ? [{{ id: '10', title: 'Example', url: 'https://example.com', parentId: '1' }}] : id === '1' ? [{{ id: '1', title: '收藏夹栏', parentId: '0' }}] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => {{ createCalls += 1; callback({{ id: 'q1', title: opts.title, parentId: opts.parentId }}); }},
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', focusPath: '/收藏夹栏/AI', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'remove_duplicate',
+          status: 'approved',
+          reason: 'dedupe',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/' }}
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{ succeeded: response.succeeded.length, failures: response.failures.length, error: response.failures[0].error, moveCalls, createCalls }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 0)
+        self.assertEqual(result["failures"], 1)
+        self.assertIn("outside focus scope", str(result["error"]))
+        self.assertEqual(result["moveCalls"], [])
+        self.assertEqual(result["createCalls"], 0)
 
     def test_undo_log_records_before_state_for_move(self):
         script = f"""
