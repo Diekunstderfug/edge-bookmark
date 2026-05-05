@@ -33,6 +33,7 @@ let runningJobId = "";
 let _jobHeartbeatIntervalId = null;
 let _jobAbortController = null;
 let _startupCleanupStarted = false;
+let _creatingOffscreenPromise = null;
 
 function createJobAbortController() {
   abortJobAbortController();
@@ -80,12 +81,24 @@ async function ensureOffscreenDocument() {
   if (await hasOffscreenDocument()) {
     return true;
   }
-  await chrome.offscreen.createDocument({
+  if (_creatingOffscreenPromise) {
+    await _creatingOffscreenPromise;
+    return true;
+  }
+  const creatingPromise = chrome.offscreen.createDocument({
     url: "offscreen.html",
     reasons: ["WORKERS"],
     justification: "Execute long-running LLM API calls that exceed MV3 Service Worker idle timeout.",
   });
-  return true;
+  _creatingOffscreenPromise = creatingPromise;
+  try {
+    await creatingPromise;
+    return true;
+  } finally {
+    if (_creatingOffscreenPromise === creatingPromise) {
+      _creatingOffscreenPromise = null;
+    }
+  }
 }
 
 async function closeOffscreenDocument() {
