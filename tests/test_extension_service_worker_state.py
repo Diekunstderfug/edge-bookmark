@@ -256,6 +256,68 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["resultSummaryActionCount"], 1)
         self.assertEqual(result["savedActionType"], "move_bookmark")
 
+    def test_finish_job_preserves_current_storage_fields_when_stale_job_completes(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{
+            require(path.join(repoRoot, 'extension', file));
+          }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: () => {{}} }} }},
+          storage: {{ local: {{ set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }}, get: (key, callback) => {{ callback({{ [key]: storage[key] }}); }}, remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }} }} }},
+          bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
+        }};
+        storage.bookmarkAdvisorActiveJob = {{
+          id: 'job-1',
+          type: 'generate-ai-plan',
+          status: 'running',
+          stage: 'save',
+          progress: 'older progress',
+          started_at: '2026-05-06T00:00:00.000Z',
+          updated_at: '2026-05-06T00:00:01.000Z',
+          cancellation_requested_at: '2026-05-06T00:00:02.000Z',
+          preserved_field: 'keep-me'
+        }};
+        require(serviceWorkerPath);
+        Promise.resolve(globalThis.__bookmarkAdvisorTestHooks.finishJob(
+          {{
+            id: 'job-1',
+            type: 'generate-ai-plan',
+            status: 'running',
+            stage: 'llm',
+            progress: 'stale progress',
+            updated_at: '2026-05-05T23:59:59.000Z'
+          }},
+          {{ reviewed_plan: {{ actions: [] }} }},
+          'AI plan generated.'
+        )).then(() => {{
+          const saved = storage.bookmarkAdvisorActiveJob;
+          console.log(JSON.stringify({{
+            finalStatus: saved.status,
+            finalStage: saved.stage,
+            finalProgress: saved.progress,
+            cancellationRequestedAt: saved.cancellation_requested_at,
+            preservedField: saved.preserved_field,
+            resultSummaryType: saved.result_summary && saved.result_summary.type
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["finalStatus"], "succeeded")
+        self.assertEqual(result["finalStage"], "save")
+        self.assertEqual(result["finalProgress"], "AI plan generated.")
+        self.assertEqual(result["cancellationRequestedAt"], "2026-05-06T00:00:02.000Z")
+        self.assertEqual(result["preservedField"], "keep-me")
+        self.assertEqual(result["resultSummaryType"], "plan")
+
     def test_cancel_active_job_aborts_inflight_ai_job_and_persists_cancelled_state(self):
         script = f"""
         const path = require('path');

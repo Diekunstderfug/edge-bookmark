@@ -130,6 +130,11 @@ if (typeof process !== "undefined" && typeof globalThis !== "undefined") {
   globalThis.__bookmarkAdvisorTestHooks = {
     hasOffscreenDocument,
     supportsOffscreenProtocol,
+    setJobStage,
+    jobProgress,
+    jobHeartbeatTick,
+    finishJob,
+    failJob,
   };
 }
 
@@ -798,7 +803,7 @@ async function failJob(job, message) {
     ? job.cancellation_requested_at || current.cancellation_requested_at || new Date().toISOString()
     : job.cancellation_requested_at || current.cancellation_requested_at || "";
   const failed = {
-    ...job,
+    ...current,
     status: "failed",
     ...(cancellationRequestedAt ? { cancellation_requested_at: cancellationRequestedAt } : {}),
     progress: message,
@@ -965,7 +970,7 @@ async function finishJob(job, result, progress) {
     return current;
   }
   await saveActiveJob({
-    ...job,
+    ...current,
     status: "succeeded",
     progress,
     result_summary: summarizeJobResult(result),
@@ -1033,7 +1038,7 @@ function jobProgress(job, message) {
       return;
     }
     const updated = {
-      ...job,
+      ...current,
       status: "running",
       progress: message,
       updated_at: new Date().toISOString(),
