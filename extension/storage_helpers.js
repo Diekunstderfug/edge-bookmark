@@ -29,6 +29,18 @@ function chromeStorageGet(key) {
   });
 }
 
+function chromeStorageRemove(key) {
+  return new Promise(function (resolve, reject) {
+    chrome.storage.local.remove(key, function () {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 function saveLastPlan(plan) {
   return chromeStorageSet(LAST_PLAN_STORAGE_NAME, {
     plan: plan,
@@ -53,6 +65,7 @@ if (typeof globalThis !== "undefined") {
   globalThis.UNDO_LOG_STORAGE_NAME = UNDO_LOG_STORAGE_NAME;
   globalThis.chromeStorageSet = chromeStorageSet;
   globalThis.chromeStorageGet = chromeStorageGet;
+  globalThis.chromeStorageRemove = chromeStorageRemove;
   globalThis.saveLastPlan = saveLastPlan;
   globalThis.saveLastReport = saveLastReport;
   globalThis.pathWithinScope = pathWithinScope;

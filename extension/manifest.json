@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Bookmark Advisor Executor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Generate, review, and apply Bookmark Advisor plans with chrome.bookmarks APIs.",
-  "permissions": ["bookmarks", "storage"],
+  "permissions": ["bookmarks", "storage", "offscreen"],
   "host_permissions": [],
   "optional_host_permissions": ["https://*/*"],
   "background": {

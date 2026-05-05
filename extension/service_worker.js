@@ -1,22 +1,34 @@
 importScripts("ai_planner.js");
 importScripts("storage_helpers.js");
 
-/* global ACTIVE_JOB_STORAGE_NAME, UNDO_LOG_STORAGE_NAME, BookmarkAdvisorAI, chromeStorageGet, chromeStorageSet, saveLastPlan, saveLastReport, pathWithinScope */
+/* global ACTIVE_JOB_STORAGE_NAME, UNDO_LOG_STORAGE_NAME, BookmarkAdvisorAI, chromeStorageGet, chromeStorageRemove, chromeStorageSet, saveLastPlan, saveLastReport, pathWithinScope */
+
+const OFFSCREEN_DOCUMENT_URL = chrome.runtime.getURL("offscreen.html");
+const OFFSCREEN_RESULT_STORAGE_NAME = "bookmarkAdvisorOffscreenResult";
 
 const EXECUTION_ORDER = [
   "rename_folder",
+  "delete_empty_folder",
   "create_folder",
   "move_folder",
   "move_bookmark",
   "remove_duplicate",
+  "keep_for_review",
 ];
 const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
 const ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
 const STARTUP_JOB_STALE_MS = 60 * 1000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 180000;
+const MAX_EXTENSION_FETCH_TIMEOUT_MS = 300000;
+const DEFAULT_MAX_RETRIES = 1;
+const MAX_LINT_RETRIES = 3;
+const OFFSCREEN_DEADLINE_GRACE_MS = 60000;
+const FALLBACK_REQUEST_ATTEMPT_COUNT = 5;
 const QUARANTINE_FOLDER_PATH = "/收藏夹栏/_Quarantine";
 const UNDO_MOVE = "move";
 const UNDO_RENAME = "rename";
 const UNDO_DELETE_FOLDER = "delete_folder";
+const UNDO_CREATE_FOLDER = "create_folder";
 let runningJobId = "";
 let _jobHeartbeatIntervalId = null;
 let _jobAbortController = null;
@@ -48,17 +60,285 @@ function clearRunningJobState(jobId, controller) {
   clearJobAbortController(controller);
 }
 
+// ── Offscreen Document 管理 ──
+
+async function hasOffscreenDocument() {
+  if (!chrome.runtime || typeof chrome.runtime.getContexts !== "function") {
+    return false;
+  }
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [OFFSCREEN_DOCUMENT_URL],
+  });
+  return contexts.length > 0;
+}
+
+async function ensureOffscreenDocument() {
+  if (!supportsOffscreenProtocol()) {
+    return false;
+  }
+  if (await hasOffscreenDocument()) {
+    return true;
+  }
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["WORKERS"],
+    justification: "Execute long-running LLM API calls that exceed MV3 Service Worker idle timeout.",
+  });
+  return true;
+}
+
+async function closeOffscreenDocument() {
+  if (
+    chrome.offscreen &&
+    typeof chrome.offscreen.closeDocument === "function" &&
+    await hasOffscreenDocument()
+  ) {
+    await chrome.offscreen.closeDocument();
+  }
+}
+
+function supportsOffscreenProtocol() {
+  return !!(
+    chrome.runtime &&
+    typeof chrome.runtime.getContexts === "function" &&
+    typeof chrome.runtime.sendMessage === "function" &&
+    chrome.offscreen &&
+    typeof chrome.offscreen.createDocument === "function"
+  );
+}
+
+function createAbortError(message) {
+  const error = new Error(message || "The operation was aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
+function swLog(...args) {
+  if (typeof process === "undefined") {
+    // eslint-disable-next-line no-console
+    console.log(...args);
+  }
+}
+
+function positiveInteger(value, fallback) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue) || numberValue < 0) {
+    return fallback;
+  }
+  return Math.floor(numberValue);
+}
+
+function clampNumber(value, minValue, maxValue) {
+  return Math.min(Math.max(value, minValue), maxValue);
+}
+
+function llmOptionsFromPayload(mode, payload) {
+  if (mode === "revise") {
+    return payload && payload.options ? payload.options : {};
+  }
+  return payload || {};
+}
+
+function requestAttemptCountForOptions(options) {
+  if (
+    globalThis.BookmarkAdvisorAI &&
+    typeof globalThis.BookmarkAdvisorAI._buildRequestAttempts === "function"
+  ) {
+    return Math.max(1, globalThis.BookmarkAdvisorAI._buildRequestAttempts(
+      options.apiStyle,
+      options.apiBaseUrl,
+    ).length);
+  }
+  return FALLBACK_REQUEST_ATTEMPT_COUNT;
+}
+
+function offscreenHardTimeoutMs(mode, payload) {
+  const options = llmOptionsFromPayload(mode, payload);
+  const requestTimeoutMs = clampNumber(
+    positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS),
+    1,
+    MAX_EXTENSION_FETCH_TIMEOUT_MS,
+  );
+  const lintRetries = clampNumber(
+    positiveInteger(options.maxRetries, DEFAULT_MAX_RETRIES),
+    0,
+    MAX_LINT_RETRIES,
+  );
+  const lintPasses = lintRetries + 1;
+  const endpointAttempts = requestAttemptCountForOptions(options);
+  return (requestTimeoutMs * lintPasses * endpointAttempts) + OFFSCREEN_DEADLINE_GRACE_MS;
+}
+
+// 通过 offscreen document 执行 LLM 调用，返回 Promise
+function runLlmViaOffscreen(job, mode, payload, controller) {
+  if (!supportsOffscreenProtocol()) {
+    return runLlmDirectlyWithoutOffscreen(mode, payload, controller);
+  }
+  return new Promise((resolve, reject) => {
+    const jobId = job.id;
+    let resolved = false;
+    // 硬超时保护：即使 offscreen document 崩溃或消息丢失，也不让 Promise 永远挂起
+    const HARD_OFFSCREEN_TIMEOUT_MS = offscreenHardTimeoutMs(mode, payload);
+    const hardTimeoutId = setTimeout(() => {
+      if (resolved) return;
+      // eslint-disable-next-line no-console
+      console.error(`[BookmarkAdvisor][SW] offscreen hard timeout (${HARD_OFFSCREEN_TIMEOUT_MS}ms) for job=${jobId}`);
+      cleanup();
+      resolved = true;
+      reject(new Error(`Offscreen document did not respond within ${Math.round(HARD_OFFSCREEN_TIMEOUT_MS / 1000)}s. It may have crashed or been closed by the browser.`));
+    }, HARD_OFFSCREEN_TIMEOUT_MS);
+
+    function onMessage(message) {
+      if (!message || message.jobId !== jobId) return;
+
+      if (message.type === "offscreen-progress") {
+        void jobProgress(job, message.message);
+        return;
+      }
+
+      if (message.type === "offscreen-result") {
+        swLog(`[BookmarkAdvisor][SW] received offscreen-result for job=${jobId}`);
+        cleanup();
+        resolved = true;
+        void chromeStorageRemove(OFFSCREEN_RESULT_STORAGE_NAME).catch(() => {});
+        resolve(message.result);
+        return;
+      }
+
+      if (message.type === "offscreen-error") {
+        swLog(`[BookmarkAdvisor][SW] received offscreen-error for job=${jobId}:`, message.error);
+        cleanup();
+        resolved = true;
+        void chromeStorageRemove(OFFSCREEN_RESULT_STORAGE_NAME).catch(() => {});
+        if (message.abortLike) {
+          reject(createAbortError(message.error));
+        } else {
+          reject(new Error(message.error));
+        }
+        return;
+      }
+    }
+
+    function onAbort() {
+      if (resolved) return;
+      cleanup();
+      resolved = true;
+      reject(createAbortError("Cancelled by user."));
+      chrome.runtime.sendMessage({ type: "offscreen-cancel" }).catch(() => {});
+    }
+
+    function cleanup() {
+      clearTimeout(hardTimeoutId);
+      chrome.runtime.onMessage.removeListener(onMessage);
+      if (controller) {
+        controller.signal.removeEventListener("abort", onAbort);
+      }
+    }
+
+    chrome.runtime.onMessage.addListener(onMessage);
+    if (controller) {
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    swLog(`[BookmarkAdvisor][SW] sending offscreen-llm to offscreen, jobId=${jobId}, mode=${mode}`);
+    chrome.runtime.sendMessage({
+      type: "offscreen-llm",
+      jobId,
+      mode,
+      payload,
+    }).then((response) => {
+      swLog(`[BookmarkAdvisor][SW] offscreen accepted task, response=`, response);
+      if (!response || !response.ok) {
+        cleanup();
+        resolved = true;
+        reject(new Error(response?.error || "Offscreen rejected the task"));
+      }
+    }).catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error(`[BookmarkAdvisor][SW] failed to send offscreen-llm:`, error);
+      cleanup();
+      resolved = true;
+      reject(error);
+    });
+  });
+}
+
+function runLlmDirectlyWithoutOffscreen(mode, payload, controller) {
+  const restoreConsoleLog = suppressConsoleLogInNode();
+  const promise = mode === "revise"
+    ? globalThis.BookmarkAdvisorAI.reviseReviewedPlan({
+        ...payload.options,
+        existingPlan: payload.plan,
+        signal: controller ? controller.signal : undefined,
+      })
+    : globalThis.BookmarkAdvisorAI.generateReviewedPlan({
+        ...payload,
+        signal: controller ? controller.signal : undefined,
+      });
+  return promise.finally(restoreConsoleLog);
+}
+
+function suppressConsoleLogInNode() {
+  if (typeof process === "undefined") {
+    return function () {};
+  }
+  const originalLog = console.log;
+  console.log = function (...args) {
+    // eslint-disable-next-line no-console
+    console.error(...args);
+  };
+  return function () {
+    console.log = originalLog;
+  };
+}
+
+// ── 任务阶段管理 ──
+
+async function setJobStage(job, stage) {
+  const current = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+  if (!current || current.id !== job.id) return;
+  job.stage = stage;
+  job.stage_started_at = new Date().toISOString();
+  await saveActiveJob({ ...current, stage, stage_started_at: job.stage_started_at, updated_at: new Date().toISOString() });
+}
+
 async function cleanupStaleActiveJobOnStartup() {
   if (_startupCleanupStarted) {
     return;
   }
   _startupCleanupStarted = true;
   try {
-    const activeJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
-    if (!isStartupStaleRunningJob(activeJob)) {
+    // 先检查是否有 offscreen 已完成的暂存结果（SW 终止期间 offscreen 独立完成）
+    const recovered = await recoverPersistedOffscreenResult("Restored from offscreen after SW restart.");
+    if (recovered) {
       return;
     }
-    await failJob(activeJob, "Service worker restarted. Background job was interrupted.");
+
+    const activeJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+    if (!activeJob || activeJob.status !== "running") {
+      return;
+    }
+
+    // 如果任务处于 export/llm 阶段且不太旧，说明 SW 在执行中重启，
+    // offscreen document 可能仍在运行。不标记失败，等用户查看时再恢复。
+    const stage = activeJob.stage || "";
+    const isResumableStage = ["export", "llm", "prompt_build"].includes(stage);
+    const isFresh = !isStartupStaleRunningJob(activeJob);
+
+    if (isResumableStage && isFresh) {
+      // 保留 running 状态，让 popup 打开时尝试恢复
+      return;
+    }
+
+    if (isStaleRunningJob(activeJob) && hasValidRunningJobTimestamp(activeJob)) {
+      await failJob(activeJob, "Background job timed out before completion.");
+      return;
+    }
+
+    if (isStartupStaleRunningJob(activeJob)) {
+      await failJob(activeJob, "Service worker restarted. Background job was interrupted.");
+    }
   } catch (_error) {
     // 启动清理失败不应影响服务工作线程加载。
   }
@@ -75,9 +355,69 @@ function isAbortLikeError(error) {
   return /aborted|cancelled by user/i.test(message);
 }
 
+async function recoverPersistedOffscreenResult(progress) {
+  const offscreenResult = await chromeStorageGet(OFFSCREEN_RESULT_STORAGE_NAME);
+  if (!offscreenResult || !offscreenResult.jobId) {
+    return null;
+  }
+  return consumeOffscreenResultPayload(offscreenResult, progress, { removeStoredResult: true });
+}
+
+async function consumeOffscreenCompletionMessage(message) {
+  if (!message || !message.jobId) {
+    return null;
+  }
+  if (runningJobId === message.jobId) {
+    return null;
+  }
+  const storedResult = await chromeStorageGet(OFFSCREEN_RESULT_STORAGE_NAME);
+  if (storedResult && storedResult.jobId === message.jobId) {
+    return consumeOffscreenResultPayload(storedResult, "Restored from late offscreen completion.", {
+      removeStoredResult: true,
+    });
+  }
+  const payload = message.type === "offscreen-result"
+    ? { jobId: message.jobId, ok: true, result: message.result }
+    : {
+        jobId: message.jobId,
+        ok: false,
+        error: message.error || "Offscreen task failed.",
+        abortLike: !!message.abortLike,
+      };
+  return consumeOffscreenResultPayload(payload, "Restored from late offscreen completion.", {
+    removeStoredResult: false,
+  });
+}
+
+async function consumeOffscreenResultPayload(offscreenResult, progress, options = {}) {
+  const activeJob = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+  if (!activeJob || activeJob.status !== "running" || activeJob.id !== offscreenResult.jobId) {
+    return null;
+  }
+  if (options.removeStoredResult) {
+    await chromeStorageRemove(OFFSCREEN_RESULT_STORAGE_NAME);
+  }
+  if (offscreenResult.ok && offscreenResult.result) {
+    if (activeJob.type === "generate-ai-plan" || activeJob.type === "revise-ai-plan") {
+      await saveLastPlan(offscreenResult.result.reviewed_plan);
+    }
+    await finishJob(activeJob, offscreenResult.result, progress);
+  } else {
+    await failJob(activeJob, offscreenResult.error || "Offscreen task failed.");
+  }
+  return chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message) {
     return undefined;
+  }
+
+  if (message.type === "offscreen-result" || message.type === "offscreen-error") {
+    consumeOffscreenCompletionMessage(message)
+      .then((job) => sendResponse({ ok: true, recovered: !!job }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
   }
 
   if (message.type === "apply-reviewed-plan") {
@@ -224,6 +564,10 @@ async function runDirectMutatingOperation(jobType, callback) {
 }
 
 async function getActiveJobForPopup() {
+  const recovered = await recoverPersistedOffscreenResult("Restored from offscreen after popup wake.");
+  if (recovered) {
+    return recovered;
+  }
   const job = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
   if (isStaleRunningJob(job)) {
     const failed = await failJob(job, "Background job timed out before completion.");
@@ -246,6 +590,14 @@ function isStartupStaleRunningJob(job) {
   }
   const now = Date.now();
   return now - effectiveAt > STARTUP_JOB_STALE_MS;
+}
+
+function hasValidRunningJobTimestamp(job) {
+  if (!job || job.status !== "running") {
+    return false;
+  }
+  const updatedAt = Date.parse(job.updated_at || job.started_at || "");
+  return Number.isFinite(updatedAt);
 }
 
 function isStaleRunningJob(job) {
@@ -299,13 +651,11 @@ async function runBackgroundJob(job, payload, jobAbortController) {
   try {
     const onProgress = (message) => jobProgress(job, message);
     if (job.type === "generate-ai-plan") {
-      const result = await generateAiReviewedPlan({ ...(payload.options || {}), signal: jobAbortController.signal }, onProgress);
-      await finishJob(job, result, "AI plan generated.");
+      await runGenerateAiPlan(job, payload, jobAbortController, onProgress);
       return;
     }
     if (job.type === "revise-ai-plan") {
-      const result = await reviseAiReviewedPlan(payload.plan, { ...(payload.options || {}), signal: jobAbortController.signal }, onProgress);
-      await finishJob(job, result, "AI plan revision complete.");
+      await runReviseAiPlan(job, payload, jobAbortController, onProgress);
       return;
     }
     if (job.type === "apply-reviewed-plan") {
@@ -321,7 +671,99 @@ async function runBackgroundJob(job, payload, jobAbortController) {
   } finally {
     stopJobHeartbeat();
     clearRunningJobState(job.id, jobAbortController);
+    void closeOffscreenDocument().catch(() => {});
   }
+}
+
+async function runGenerateAiPlan(job, payload, controller, onProgress) {
+  swLog(`[BookmarkAdvisor][SW] runGenerateAiPlan start, jobId=${job.id}`);
+  await setJobStage(job, "export");
+  await onProgress("Exporting current bookmarks...");
+  const t0 = Date.now();
+  const snapshot = await exportCurrentSnapshot();
+  const exportMs = Date.now() - t0;
+  const bmCount = (snapshot.bookmarks || []).length;
+  const folderCount = (snapshot.folders || []).length;
+  await onProgress(`Snapshot: ${bmCount} bookmarks, ${folderCount} folders (${exportMs}ms)`);
+
+  await setJobStage(job, "llm");
+  await onProgress("Creating offscreen document for LLM call...");
+  await ensureOffscreenDocument();
+  await onProgress("Calling LLM via offscreen document...");
+
+  const llmPayload = {
+    apiKey: payload.options?.apiKey,
+    apiBaseUrl: payload.options?.apiBaseUrl,
+    apiStyle: payload.options?.apiStyle,
+    model: payload.options?.model,
+    maxActions: payload.options?.maxActions,
+    requestTimeoutMs: payload.options?.requestTimeoutMs,
+    maxRetries: payload.options?.maxRetries,
+    focusPath: payload.options?.focusPath,
+    userInstruction: payload.options?.userInstruction,
+    preferences: payload.options?.preferences,
+    snapshot,
+  };
+
+  swLog(`[BookmarkAdvisor][SW] calling runLlmViaOffscreen...`);
+  const result = await runLlmViaOffscreen(job, "generate", llmPayload, controller);
+  swLog(`[BookmarkAdvisor][SW] runLlmViaOffscreen returned, entering save stage`);
+
+  await setJobStage(job, "save");
+  swLog(`[BookmarkAdvisor][SW] saving plan...`);
+  await saveLastPlan(result.reviewed_plan);
+  swLog(`[BookmarkAdvisor][SW] plan saved, finishing job...`);
+  await onProgress("AI plan generated and saved for popup restore.");
+  await finishJob(job, result, "AI plan generated.");
+  swLog(`[BookmarkAdvisor][SW] runGenerateAiPlan complete`);
+}
+
+async function runReviseAiPlan(job, payload, controller, onProgress) {
+  if (!payload.plan || typeof payload.plan !== "object" || !Array.isArray(payload.plan.actions)) {
+    throw new Error("Load a reviewed plan before asking the LLM to revise it.");
+  }
+
+  swLog(`[BookmarkAdvisor][SW] runReviseAiPlan start, jobId=${job.id}`);
+  await setJobStage(job, "export");
+  await onProgress("Exporting current bookmarks...");
+  const t0 = Date.now();
+  const snapshot = await exportCurrentSnapshot();
+  const exportMs = Date.now() - t0;
+  const bmCount = (snapshot.bookmarks || []).length;
+  const folderCount = (snapshot.folders || []).length;
+  await onProgress(`Snapshot: ${bmCount} bookmarks, ${folderCount} folders (${exportMs}ms)`);
+
+  await setJobStage(job, "llm");
+  await onProgress("Creating offscreen document for LLM call...");
+  await ensureOffscreenDocument();
+  await onProgress("Calling LLM via offscreen document...");
+
+  const llmPayload = {
+    options: {
+      apiKey: payload.options?.apiKey,
+      apiBaseUrl: payload.options?.apiBaseUrl,
+      apiStyle: payload.options?.apiStyle,
+      model: payload.options?.model,
+      maxActions: payload.options?.maxActions,
+      requestTimeoutMs: payload.options?.requestTimeoutMs,
+      maxRetries: payload.options?.maxRetries,
+      focusPath: payload.options?.focusPath,
+      userInstruction: payload.options?.userInstruction,
+      preferences: payload.options?.preferences,
+      snapshot,
+    },
+    plan: payload.plan,
+  };
+
+  swLog(`[BookmarkAdvisor][SW] calling runLlmViaOffscreen for revise...`);
+  const result = await runLlmViaOffscreen(job, "revise", llmPayload, controller);
+  swLog(`[BookmarkAdvisor][SW] runLlmViaOffscreen returned, entering save stage`);
+
+  await setJobStage(job, "save");
+  await saveLastPlan(result.reviewed_plan);
+  await onProgress("AI plan revision saved for popup restore.");
+  await finishJob(job, result, "AI plan revision complete.");
+  swLog(`[BookmarkAdvisor][SW] runReviseAiPlan complete`);
 }
 
 async function finishJob(job, result, progress) {
@@ -347,7 +789,7 @@ function saveActiveJob(job) {
   return chromeStorageSet(globalThis.ACTIVE_JOB_STORAGE_NAME, job);
 }
 
-function startJobHeartbeat(job, intervalMs = 25000) {
+function startJobHeartbeat(job, intervalMs = 15000) {
   stopJobHeartbeat();
   if (!job || !job.id) {
     return;
@@ -397,35 +839,89 @@ function jobProgress(job, message) {
 }
 
 async function generateAiReviewedPlan(options, onProgress = reportProgress) {
-  await onProgress("Exporting current bookmarks...");
-  const snapshot = await exportCurrentSnapshot();
-  await onProgress("Calling LLM endpoint...");
-  const result = await BookmarkAdvisorAI.generateReviewedPlan({
-    ...options,
-    onProgress,
-    snapshot,
-  });
-  await saveLastPlan(result.reviewed_plan);
-  await onProgress("AI plan generated and saved for popup restore.");
-  return result;
+  try {
+    await onProgress("Exporting current bookmarks...");
+    const t0 = Date.now();
+    const snapshot = await exportCurrentSnapshot();
+    const exportMs = Date.now() - t0;
+    const bmCount = (snapshot.bookmarks || []).length;
+    const folderCount = (snapshot.folders || []).length;
+    await onProgress(`Snapshot: ${bmCount} bookmarks, ${folderCount} folders (${exportMs}ms)`);
+
+    await onProgress("Creating offscreen document for LLM call...");
+    await ensureOffscreenDocument();
+    await onProgress("Calling LLM via offscreen document...");
+
+    const llmPayload = {
+      apiKey: options.apiKey,
+      apiBaseUrl: options.apiBaseUrl,
+      apiStyle: options.apiStyle,
+      model: options.model,
+      maxActions: options.maxActions,
+      requestTimeoutMs: options.requestTimeoutMs,
+      maxRetries: options.maxRetries,
+      focusPath: options.focusPath,
+      userInstruction: options.userInstruction,
+      preferences: options.preferences,
+      snapshot,
+    };
+
+    const abortController = new AbortController();
+    const fakeJob = { id: `direct-generate-${Date.now()}` };
+    const result = await runLlmViaOffscreen(fakeJob, "generate", llmPayload, abortController);
+
+    await saveLastPlan(result.reviewed_plan);
+    await onProgress("AI plan generated and saved for popup restore.");
+    return result;
+  } finally {
+    void closeOffscreenDocument().catch(() => {});
+  }
 }
 
 async function reviseAiReviewedPlan(plan, options, onProgress = reportProgress) {
   if (!plan || typeof plan !== "object" || !Array.isArray(plan.actions)) {
     throw new Error("Load a reviewed plan before asking the LLM to revise it.");
   }
-  await onProgress("Exporting current bookmarks...");
-  const snapshot = await exportCurrentSnapshot();
-  await onProgress("Calling LLM endpoint to revise current plan...");
-  const result = await BookmarkAdvisorAI.reviseReviewedPlan({
-    ...options,
-    existingPlan: plan,
-    onProgress,
-    snapshot,
-  });
-  await saveLastPlan(result.reviewed_plan);
-  await onProgress("AI plan revision saved for popup restore.");
-  return result;
+  try {
+    await onProgress("Exporting current bookmarks...");
+    const t0 = Date.now();
+    const snapshot = await exportCurrentSnapshot();
+    const exportMs = Date.now() - t0;
+    const bmCount = (snapshot.bookmarks || []).length;
+    const folderCount = (snapshot.folders || []).length;
+    await onProgress(`Snapshot: ${bmCount} bookmarks, ${folderCount} folders (${exportMs}ms)`);
+
+    await onProgress("Creating offscreen document for LLM call...");
+    await ensureOffscreenDocument();
+    await onProgress("Calling LLM via offscreen document...");
+
+    const llmPayload = {
+      options: {
+        apiKey: options.apiKey,
+        apiBaseUrl: options.apiBaseUrl,
+        apiStyle: options.apiStyle,
+        model: options.model,
+        maxActions: options.maxActions,
+        requestTimeoutMs: options.requestTimeoutMs,
+        maxRetries: options.maxRetries,
+        focusPath: options.focusPath,
+        userInstruction: options.userInstruction,
+        preferences: options.preferences,
+        snapshot,
+      },
+      plan,
+    };
+
+    const abortController = new AbortController();
+    const fakeJob = { id: `direct-revise-${Date.now()}` };
+    const result = await runLlmViaOffscreen(fakeJob, "revise", llmPayload, abortController);
+
+    await saveLastPlan(result.reviewed_plan);
+    await onProgress("AI plan revision saved for popup restore.");
+    return result;
+  } finally {
+    void closeOffscreenDocument().catch(() => {});
+  }
 }
 
 async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress, jobContext = null) {
@@ -434,10 +930,7 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress,
   const executionId = `exec-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const grouped = new Map(EXECUTION_ORDER.map((actionType) => [actionType, []]));
   for (const action of plan.actions) {
-    if (
-      !EXECUTABLE_ACTIONS().has(action.action_type) ||
-      !EXECUTABLE_STATUSES.has(resolveActionStatus(plan, action))
-    ) {
+    if (!isExecutablePlanAction(plan, action)) {
       continue;
     }
     grouped.get(action.action_type).push(action);
@@ -605,6 +1098,19 @@ function validateExecutablePlan(plan) {
   }
 }
 
+function isExecutablePlanAction(plan, action) {
+  if (!EXECUTABLE_ACTIONS().has(action.action_type)) {
+    return false;
+  }
+  if (!EXECUTABLE_STATUSES.has(resolveActionStatus(plan, action))) {
+    return false;
+  }
+  if (action.action_type === "keep_for_review") {
+    return !!(action.details && action.details.review_agreed === true);
+  }
+  return true;
+}
+
 function checkActionPolicy(action, focusPath) {
   if (!focusPath) {
     return { allowed: true };
@@ -640,6 +1146,15 @@ function checkActionPolicy(action, focusPath) {
     }
     case "remove_duplicate":
       return { allowed: true };
+    case "delete_empty_folder": {
+      const fromPath = action.from_path || (action.folder_locator || {}).path || "";
+      if (fromPath && !pathWithinScope(fromPath, focusPath)) {
+        return { allowed: false, reason: `delete_empty_folder path ${fromPath} is outside focus scope ${focusPath}` };
+      }
+      return { allowed: true };
+    }
+    case "keep_for_review":
+      return { allowed: true };
     default:
       return { allowed: false, reason: `Unknown action_type: ${type}` };
   }
@@ -656,7 +1171,9 @@ async function recordUndo(executionId, action, before, undoType) {
       ? { type: UNDO_DELETE_FOLDER, id: before.id }
       : undoType === UNDO_RENAME
         ? { type: UNDO_RENAME, id: before.id, title: before.title }
-        : { type: UNDO_MOVE, id: before.id, parentId: before.parentId },
+        : undoType === UNDO_CREATE_FOLDER
+          ? { type: UNDO_CREATE_FOLDER, path: before.path }
+          : { type: UNDO_MOVE, id: before.id, parentId: before.parentId },
     timestamp: new Date().toISOString(),
   };
   const log = (await chromeStorageGet(UNDO_LOG_STORAGE_NAME)) || [];
@@ -696,6 +1213,8 @@ async function undoLastExecution() {
         await bookmarkCall("update", ua.id, { title: ua.title });
       } else if (ua.type === UNDO_DELETE_FOLDER) {
         await bookmarkCall("remove", ua.id);
+      } else if (ua.type === UNDO_CREATE_FOLDER) {
+        await ensureFolderPath(ua.path);
       }
       undone.push(entry.undo_id);
     } catch (error) {
@@ -748,6 +1267,23 @@ async function applyAction(action, focusPath, executionId) {
       await bookmarkCall("update", folderId, { title: action.to_name });
       return;
     }
+    case "delete_empty_folder": {
+      const folderId = await resolveFolderId(action);
+      if (!folderId) {
+        throw new Error("Could not resolve folder by locator");
+      }
+      const children = await bookmarkCall("getChildren", folderId);
+      if ((children || []).length > 0) {
+        throw new Error("delete_empty_folder requires the folder to be empty");
+      }
+      const [folderNode] = await bookmarkCall("get", folderId);
+      const folderPath = expectedFolderPath(action) || `${await nodeParentPath(folderNode.parentId)}/${folderNode.title || ""}`.replace(/\/+/g, "/");
+      if (executionId) {
+        await recordUndo(executionId, action, { id: folderId, path: folderPath, title: folderNode.title }, UNDO_CREATE_FOLDER);
+      }
+      await bookmarkCall("remove", folderId);
+      return;
+    }
     case "move_folder": {
       if (!action.to_path) {
         throw new Error("move_folder requires to_path");
@@ -797,6 +1333,8 @@ async function applyAction(action, focusPath, executionId) {
       await bookmarkCall("move", dupBookmarkId, { parentId: quarantineFolderId });
       return;
     }
+    case "keep_for_review":
+      return;
     default:
       throw new Error(`Unsupported action_type: ${action.action_type}`);
   }

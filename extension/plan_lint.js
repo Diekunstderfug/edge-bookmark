@@ -5,6 +5,7 @@
     "move_folder",
     "move_bookmark",
     "remove_duplicate",
+    "delete_empty_folder",
   ]);
   const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
   const KNOWN_ACTION_TYPES = new Set([...EXECUTABLE_ACTIONS, "keep_for_review"]);
@@ -139,7 +140,9 @@
       }
 
       const status = resolveActionStatus(plan, action);
-      if (actionType === "keep_for_review" || !EXECUTABLE_STATUSES.has(status)) {
+      if (actionType === "keep_for_review" && isAgreedReviewAction(action)) {
+        executableActions.push(action);
+      } else if (actionType === "keep_for_review" || !EXECUTABLE_STATUSES.has(status)) {
         reviewActions.push(action);
       } else if (actionType && EXECUTABLE_ACTIONS.has(actionType)) {
         executableActions.push(action);
@@ -168,6 +171,9 @@
         return;
       case "remove_duplicate":
         requireBookmarkLocator(action, actionPath, errors);
+        return;
+      case "delete_empty_folder":
+        requireFolderLocator(action, actionPath, errors);
         return;
       case "keep_for_review":
         return;
@@ -278,6 +284,12 @@
 
   function readNonEmptyString(value) {
     return typeof value === "string" && value.trim() ? value.trim() : "";
+  }
+
+  function isAgreedReviewAction(action) {
+    return String(action.status || "") === "approved" &&
+      isPlainObject(action.details) &&
+      action.details.review_agreed === true;
   }
 
   function isPlainObject(value) {

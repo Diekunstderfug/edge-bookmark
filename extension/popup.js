@@ -18,6 +18,7 @@ const STRINGS = {
     btn_execute: "Execute Reviewed Plan",
     btn_undo: "Undo Last Execution",
     btn_action_approve: "Approve",
+    btn_action_agree: "Agree",
     placeholder_action_revise: "How should this change? (Enter to save)",
     btn_download_report: "Download Execution Report",
     btn_continue: "Generate New Plan for Remaining",
@@ -97,6 +98,7 @@ const STRINGS = {
     action_rename: "Rename",
     action_create: "Create",
     action_dedup: "Dedup",
+    action_delete_empty_folder: "Delete empty",
     action_review: "Review",
     confidence_high: "High confidence",
     confidence_medium: "Medium confidence",
@@ -123,6 +125,7 @@ const STRINGS = {
     btn_execute: "执行整理计划",
     btn_undo: "撤销上次执行",
     btn_action_approve: "通过",
+    btn_action_agree: "同意",
     placeholder_action_revise: "这条怎么改？（回车保存）",
     btn_download_report: "\u4e0b\u8f7d\u6267\u884c\u62a5\u544a",
     btn_continue: "\u4e3a\u5269\u4f59\u9879\u751f\u6210\u65b0\u8ba1\u5212",
@@ -202,6 +205,7 @@ const STRINGS = {
     action_rename: "\u91cd\u547d\u540d",
     action_create: "\u521b\u5efa",
     action_dedup: "\u53bb\u91cd",
+    action_delete_empty_folder: "删除空文件夹",
     action_review: "\u5ba1\u67e5",
     confidence_high: "\u9ad8\u7f6e\u4fe1\u5ea6",
     confidence_medium: "\u4e2d\u7b49\u7f6e\u4fe1\u5ea6",
@@ -240,13 +244,13 @@ const LLM_SETTINGS_STORAGE_NAME = "bookmarkAdvisorLlmSettings";
 const UI_DRAFT_STORAGE_NAME = "bookmarkAdvisorPopupDraft";
 const PREFERENCES_STORAGE_NAME = "bookmarkAdvisorPreferences";
 const RUNTIME_MESSAGE_TIMEOUT_MS = 240000;
-const JOB_STALENESS_CHECK_INTERVAL_MS = 30000;
-const JOB_STALENESS_THRESHOLD_MS = 60000;
+const JOB_STALENESS_CHECK_INTERVAL_MS = 20000;
+const JOB_STALENESS_THRESHOLD_MS = 180000;
 const DEFAULT_LLM_SETTINGS = {
   apiBaseUrl: "https://api.openai.com/v1",
   apiStyle: "auto",
   model: "gpt-4o-mini",
-  requestTimeout: "120",
+  requestTimeout: "180",
 };
 const DEFAULT_PREFERENCES = {
   protectRootLooseBookmarks: "yes",
@@ -473,7 +477,7 @@ generateAiButton.addEventListener("click", async () => {
         apiStyle: settings.apiStyle,
         model: settings.model,
         maxActions: maxActionsInput.value,
-        requestTimeoutMs: (parseInt(requestTimeoutInput.value, 10) || 120) * 1000,
+        requestTimeoutMs: (parseInt(requestTimeoutInput.value, 10) || 180) * 1000,
         maxRetries: parseInt(maxRetriesInput.value, 10),
         focusPath: focusPathInput.value,
         userInstruction: userInstructionInput.value.trim(),
@@ -578,7 +582,7 @@ reviseAiButton.addEventListener("click", async () => {
         apiStyle: settings.apiStyle,
         model: settings.model,
         maxActions: maxActionsInput.value,
-        requestTimeoutMs: (parseInt(requestTimeoutInput.value, 10) || 120) * 1000,
+        requestTimeoutMs: (parseInt(requestTimeoutInput.value, 10) || 180) * 1000,
         maxRetries: parseInt(maxRetriesInput.value, 10),
         focusPath: focusPathInput.value,
         userInstruction,
@@ -1064,6 +1068,9 @@ function groupActionsByCategory(actions) {
 }
 
 function categoryKeyForAction(action) {
+  if (actionDisplayStatus(action) !== "executable") {
+    return REVIEW_CATEGORY_KEY;
+  }
   const type = String(action.action_type || "");
   if (type === "move_bookmark" || type === "move_folder") {
     return String(action.to_path || "/unclassified");
@@ -1074,7 +1081,7 @@ function categoryKeyForAction(action) {
   if (type === "rename_folder") {
     return String(action.from_path || "/unclassified");
   }
-  if (type === "remove_duplicate") {
+  if (type === "remove_duplicate" || type === "delete_empty_folder") {
     return String(action.from_path || "/unclassified");
   }
   return REVIEW_CATEGORY_KEY;
@@ -1092,11 +1099,40 @@ function sortCategories(categories) {
 
 function actionDisplayStatus(action) {
   const type = String(action.action_type || "");
-  if (type === "keep_for_review") return "review";
+  if (type === "keep_for_review") {
+    return actionReviewAgreed(action) ? "executable" : "review";
+  }
   const status = String(action.status || "").trim();
   if (status === "approved" || status === "edited") return "executable";
   if (status === "blocked") return "blocked";
   return "pending";
+}
+
+function shouldShowQuickAgreeAction(_action, isReviewCategory) {
+  return isReviewCategory;
+}
+
+function approveAction(action) {
+  if (String(action.action_type || "") === "keep_for_review") {
+    action.status = "approved";
+    action.details = {
+      ...(action.details || {}),
+      review_agreed: true,
+    };
+    saveLastPlan(loadedPlan);
+    loadPlan(loadedPlan);
+    return;
+  }
+  action.status = "approved";
+  saveLastPlan(loadedPlan);
+  loadPlan(loadedPlan);
+}
+
+function actionReviewAgreed(action) {
+  if (String(action.action_type || "") === "keep_for_review") {
+    return !!(action.details && action.details.review_agreed);
+  }
+  return actionDisplayStatus(action) === "executable";
 }
 
 function buildCategoryElement(category) {
@@ -1146,7 +1182,7 @@ function buildCategoryElement(category) {
   header.setAttribute("aria-controls", details.id);
 
   for (const action of category.actions) {
-    details.appendChild(buildActionItem(action));
+    details.appendChild(buildActionItem(action, isReviewCategory));
   }
 
   header.addEventListener("click", () => {
@@ -1173,7 +1209,7 @@ function buildCategoryElement(category) {
   return group;
 }
 
-function buildActionItem(action) {
+function buildActionItem(action, isReviewCategory = false) {
   const type = String(action.action_type || "");
   const title = actionTitle(action);
   const reason = String(action.reason || "");
@@ -1212,6 +1248,31 @@ function buildActionItem(action) {
     metaEl.appendChild(moveHint);
   }
 
+  if (shouldShowQuickAgreeAction(action, isReviewCategory)) {
+    const isAgreed = actionReviewAgreed(action);
+    const quickApproveLabel = document.createElement("label");
+    quickApproveLabel.className = "action-quick-approve" + (isAgreed ? " agreed" : "");
+    quickApproveLabel.title = t("btn_action_agree");
+    quickApproveLabel.addEventListener("click", (e) => e.stopPropagation());
+
+    const quickApproveInput = document.createElement("input");
+    quickApproveInput.type = "checkbox";
+    quickApproveInput.checked = isAgreed;
+    quickApproveInput.disabled = isAgreed;
+    quickApproveInput.setAttribute("aria-label", t("btn_action_agree"));
+    quickApproveInput.addEventListener("change", (e) => {
+      e.stopPropagation();
+      approveAction(action);
+    });
+
+    const quickApproveText = document.createElement("span");
+    quickApproveText.textContent = t("btn_action_agree");
+
+    quickApproveLabel.appendChild(quickApproveInput);
+    quickApproveLabel.appendChild(quickApproveText);
+    metaEl.appendChild(quickApproveLabel);
+  }
+
   const reasonEl = document.createElement("div");
   reasonEl.className = "action-reason";
   reasonEl.textContent = reason;
@@ -1220,34 +1281,6 @@ function buildActionItem(action) {
   item.appendChild(metaEl);
   if (reason) {
     item.appendChild(reasonEl);
-  }
-
-  if (needsReview && action.status === "proposed" && type !== "keep_for_review") {
-    const quickApproveBtn = document.createElement("button");
-    quickApproveBtn.className = "action-quick-approve";
-    quickApproveBtn.textContent = "✓";
-    quickApproveBtn.title = t("btn_action_approve");
-    quickApproveBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      action.status = "approved";
-      saveLastPlan(loadedPlan);
-      loadPlan(loadedPlan);
-    });
-    item.appendChild(quickApproveBtn);
-
-    const actionsRow = document.createElement("div");
-    actionsRow.className = "action-actions";
-    const approveBtn = document.createElement("button");
-    approveBtn.className = "action-approve";
-    approveBtn.textContent = t("btn_action_approve");
-    approveBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      action.status = "approved";
-      saveLastPlan(loadedPlan);
-      loadPlan(loadedPlan);
-    });
-    actionsRow.appendChild(approveBtn);
-    item.appendChild(actionsRow);
   }
 
   const actionKey = action.action_id || `${type}-${title}`;
@@ -1311,6 +1344,7 @@ function actionTypeLabel(type) {
     case "rename_folder": return t("action_rename");
     case "create_folder": return t("action_create");
     case "remove_duplicate": return t("action_dedup");
+    case "delete_empty_folder": return t("action_delete_empty_folder");
     case "keep_for_review": return t("action_review");
     default: return type;
   }
@@ -1423,7 +1457,17 @@ function handleJobRecord(job) {
     executeButton.disabled = true;
     cancelJobButton.hidden = false;
     showSpinner();
-    updateStatus(job.progress || t("status_job_running"), "");
+    let statusText = job.progress || t("status_job_running");
+    if (job.stage) {
+      const stageLabel = {
+        export: "导出",
+        llm: "LLM",
+        save: "保存",
+        finalize: "整理",
+      }[job.stage] || job.stage;
+      statusText = `[${stageLabel}] ${statusText}`;
+    }
+    updateStatus(statusText, "");
     return;
   }
   if (job.status === "succeeded") {
