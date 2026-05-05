@@ -23,10 +23,11 @@ SUPPORTED_AI_ACTIONS = [
     "create_folder",
     "rename_folder",
     "remove_duplicate",
+    "delete_empty_folder",
     "keep_for_review",
 ]
 REVIEWABLE_STATUSES = {"proposed", "approved", "rejected", "edited", "blocked"}
-EXECUTABLE_ACTIONS = {"move_bookmark", "move_folder", "create_folder", "rename_folder", "remove_duplicate"}
+EXECUTABLE_ACTIONS = {"move_bookmark", "move_folder", "create_folder", "rename_folder", "remove_duplicate", "delete_empty_folder"}
 SUPPORTED_API_STYLES = {"auto", "responses", "chat_completions"}
 COMPATIBILITY_FALLBACK_STATUS_CODES = {400, 404, 405, 415, 422, 501}
 NON_RETRYABLE_STATUS_CODES = {401, 403, 429}
@@ -266,6 +267,8 @@ def _normalize_action(action: SemanticAction) -> SemanticAction:
     if action.action_type == "move_folder" and not action.from_path:
         return replace(action, from_path=action.folder_locator.path)
     if action.action_type == "rename_folder" and not action.from_path:
+        return replace(action, from_path=action.folder_locator.path)
+    if action.action_type == "delete_empty_folder" and not action.from_path:
         return replace(action, from_path=action.folder_locator.path)
     return action
 

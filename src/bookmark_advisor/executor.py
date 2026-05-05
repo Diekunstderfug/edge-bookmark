@@ -82,6 +82,19 @@ def _apply_action(data: dict[str, Any], action: PlanAction) -> None:
         node, _parent = _find_node_and_parent(data, action.folder_id)
         if node:
             node["name"] = action.to_name
+        return
+    if action.action_type == "delete_empty_folder":
+        if not action.folder_id:
+            raise ValueError("delete_empty_folder requires folder_id")
+        node, parent = _find_node_and_parent(data, action.folder_id)
+        if not node or not parent:
+            raise ValueError(f"Could not resolve folder id: {action.folder_id}")
+        if node.get("type") != "folder":
+            raise ValueError("delete_empty_folder target must be a folder")
+        if node.get("children"):
+            raise ValueError("delete_empty_folder target must be empty")
+        parent["children"] = [child for child in parent.get("children", []) if str(child.get("id")) != action.folder_id]
+        return
 
 
 def _find_node_and_parent(data: dict[str, Any], target_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
