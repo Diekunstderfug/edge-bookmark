@@ -1077,14 +1077,14 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress,
   await assertJobNotCancelled(jobContext);
   await onProgress("Starting plan execution...");
   const bookmarkTree = await bookmarkCall("getTree");
-  const folderPathIndex = buildFolderPathIndex(bookmarkTree && bookmarkTree[0]);
+  const { pathToId: folderPathIndex, idToPath } = buildFolderPathIndex(bookmarkTree && bookmarkTree[0]);
 
   let stoppedOnFailure = false;
   for (const actionType of EXECUTION_ORDER) {
     for (const action of grouped.get(actionType)) {
       await assertJobNotCancelled(jobContext);
       try {
-        await applyAction(action, focusPath, executionId, folderPathIndex);
+        await applyAction(action, focusPath, executionId, folderPathIndex, idToPath);
         succeeded.push({
           actionId: action.action_id || "",
           actionType,
@@ -1379,7 +1379,7 @@ async function undoLastExecution() {
   };
 }
 
-async function applyAction(action, focusPath, executionId, folderPathIndex = null) {
+async function applyAction(action, focusPath, executionId, folderPathIndex = null, idToPath = null) {
   const policy = checkActionPolicy(action, focusPath);
   if (!policy.allowed) {
     throw new Error(`Policy blocked: ${policy.reason}`);
@@ -1390,7 +1390,7 @@ async function applyAction(action, focusPath, executionId, folderPathIndex = nul
       if (!action.target_path) {
         throw new Error("create_folder requires target_path");
       }
-      const folderResult = await ensureFolderPath(action.target_path, folderPathIndex);
+      const folderResult = await ensureFolderPath(action.target_path, folderPathIndex, idToPath);
       if (executionId) {
         for (const folder of folderResult.createdFolders) {
           await recordUndo(executionId, action, folder, UNDO_DELETE_FOLDER);
@@ -1402,7 +1402,7 @@ async function applyAction(action, focusPath, executionId, folderPathIndex = nul
       if (!action.to_name) {
         throw new Error("rename_folder requires to_name");
       }
-      const folderId = await resolveFolderId(action, folderPathIndex);
+      const folderId = await resolveFolderId(action, folderPathIndex, idToPath);
       if (!folderId) {
         throw new Error("Could not resolve folder by locator");
       }
@@ -1412,14 +1412,14 @@ async function applyAction(action, focusPath, executionId, folderPathIndex = nul
       }
       await bookmarkCall("update", folderId, { title: action.to_name });
       if (folderPathIndex) {
-        const oldPath = expectedFolderPath(action) || `${await nodeParentPath(folderNode.parentId)}/${folderNode.title || ""}`.replace(/\/+/g, "/");
-        const newPath = `${await nodeParentPath(folderNode.parentId)}/${action.to_name}`.replace(/\/+/g, "/");
-        updateFolderPathIndexPrefix(folderPathIndex, oldPath, newPath);
+        const oldPath = expectedFolderPath(action) || `${await nodeParentPath(folderNode.parentId, idToPath)}/${folderNode.title || ""}`.replace(/\/+/g, "/");
+        const newPath = `${await nodeParentPath(folderNode.parentId, idToPath)}/${action.to_name}`.replace(/\/+/g, "/");
+        updateFolderPathIndexPrefix(folderPathIndex, oldPath, newPath, idToPath);
       }
       return;
     }
     case "delete_empty_folder": {
-      const folderId = await resolveFolderId(action, folderPathIndex);
+      const folderId = await resolveFolderId(action, folderPathIndex, idToPath);
       if (!folderId) {
         throw new Error("Could not resolve folder by locator");
       }
@@ -1428,10 +1428,10 @@ async function applyAction(action, focusPath, executionId, folderPathIndex = nul
         throw new Error("delete_empty_folder requires the folder to be empty");
       }
       const [folderNode] = await bookmarkCall("get", folderId);
-      const folderPath = expectedFolderPath(action) || `${await nodeParentPath(folderNode.parentId)}/${folderNode.title || ""}`.replace(/\/+/g, "/");
+      const folderPath = expectedFolderPath(action) || `${await nodeParentPath(folderNode.parentId, idToPath)}/${folderNode.title || ""}`.replace(/\/+/g, "/");
       await bookmarkCall("remove", folderId);
       if (folderPathIndex) {
-        removeFolderPathIndexPrefix(folderPathIndex, folderPath);
+        removeFolderPathIndexPrefix(folderPathIndex, folderPath, idToPath);
       }
       if (executionId) {
         await recordUndo(executionId, action, { id: folderId, path: folderPath, title: folderNode.title, parentId: folderNode.parentId }, UNDO_CREATE_FOLDER);
@@ -1451,15 +1451,15 @@ async function applyAction(action, focusPath, executionId, folderPathIndex = nul
         throw new Error("move_folder destination must not be the source folder or its descendant");
       }
       const [srcNode] = await bookmarkCall("get", srcFolderId);
-      const destFolderId = (await ensureFolderPath(action.to_path, folderPathIndex)).id;
+      const destFolderId = (await ensureFolderPath(action.to_path, folderPathIndex, idToPath)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: srcFolderId, parentId: srcNode.parentId, title: srcNode.title }, UNDO_MOVE);
       }
       await bookmarkCall("move", srcFolderId, { parentId: destFolderId });
       if (folderPathIndex) {
-        const oldPath = fromPath || `${await nodeParentPath(srcNode.parentId)}/${srcNode.title || ""}`.replace(/\/+/g, "/");
+        const oldPath = fromPath || `${await nodeParentPath(srcNode.parentId, idToPath)}/${srcNode.title || ""}`.replace(/\/+/g, "/");
         const newPath = `${action.to_path}/${srcNode.title || ""}`.replace(/\/+/g, "/");
-        updateFolderPathIndexPrefix(folderPathIndex, oldPath, newPath);
+        updateFolderPathIndexPrefix(folderPathIndex, oldPath, newPath, idToPath);
       }
       return;
     }
@@ -1467,12 +1467,12 @@ async function applyAction(action, focusPath, executionId, folderPathIndex = nul
       if (!action.to_path) {
         throw new Error("move_bookmark requires to_path");
       }
-      const bookmarkId = await resolveBookmarkId(action);
+      const bookmarkId = await resolveBookmarkId(action, idToPath);
       if (!bookmarkId) {
         throw new Error("Could not resolve bookmark by locator");
       }
       const [node] = await bookmarkCall("get", bookmarkId);
-      const destinationFolderId = (await ensureFolderPath(action.to_path, folderPathIndex)).id;
+      const destinationFolderId = (await ensureFolderPath(action.to_path, folderPathIndex, idToPath)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: bookmarkId, parentId: node.parentId, title: node.title, url: node.url || null }, UNDO_MOVE);
       }
@@ -1485,11 +1485,11 @@ async function applyAction(action, focusPath, executionId, folderPathIndex = nul
         throw new Error("Could not resolve bookmark by locator");
       }
       const [dupNode] = await bookmarkCall("get", dupBookmarkId);
-      const sourcePath = action.from_path || (action.bookmark_locator || {}).folder_path || (await nodeParentPath(dupNode.parentId));
+      const sourcePath = action.from_path || (action.bookmark_locator || {}).folder_path || (await nodeParentPath(dupNode.parentId, idToPath));
       if (focusPath && !pathWithinScope(sourcePath, focusPath)) {
         throw new Error(`remove_duplicate source ${sourcePath} is outside focus scope ${focusPath}`);
       }
-      const quarantineFolderId = (await ensureFolderPath(QUARANTINE_FOLDER_PATH, folderPathIndex)).id;
+      const quarantineFolderId = (await ensureFolderPath(QUARANTINE_FOLDER_PATH, folderPathIndex, idToPath)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: dupBookmarkId, parentId: dupNode.parentId, title: dupNode.title, url: dupNode.url || null }, UNDO_MOVE);
       }
@@ -1503,7 +1503,7 @@ async function applyAction(action, focusPath, executionId, folderPathIndex = nul
   }
 }
 
-async function resolveFolderId(action, folderPathIndex = null) {
+async function resolveFolderId(action, folderPathIndex = null, idToPath = null) {
   const locator = action.folder_locator || {};
   const candidateId = locator.id || action.folder_id || "";
   if (candidateId) {
@@ -1514,7 +1514,7 @@ async function resolveFolderId(action, folderPathIndex = null) {
       nodes = null;
     }
     if (nodes && nodes[0]) {
-      if (!nodes[0].url && await folderNodeMatchesLocator(nodes[0], action)) {
+      if (!nodes[0].url && await folderNodeMatchesLocator(nodes[0], action, idToPath)) {
         return candidateId;
       }
       throw new Error("Folder locator id did not match the current folder metadata");
@@ -1532,7 +1532,7 @@ async function resolveFolderId(action, folderPathIndex = null) {
   return resolvePathToFolderId(tree[0], path, folderPathIndex);
 }
 
-async function resolveBookmarkId(action) {
+async function resolveBookmarkId(action, idToPath = null) {
   const locator = action.bookmark_locator || {};
   const candidateId = locator.id || action.bookmark_id || "";
   const hasTitle = typeof locator.title === "string" && locator.title.length > 0;
@@ -1545,7 +1545,7 @@ async function resolveBookmarkId(action) {
       nodes = null;
     }
     if (nodes && nodes[0]) {
-      if (nodes[0].url && await bookmarkNodeMatchesLocator(nodes[0], action)) {
+      if (nodes[0].url && await bookmarkNodeMatchesLocator(nodes[0], action, idToPath)) {
         return candidateId;
       }
       throw new Error("Bookmark locator id did not match the current bookmark metadata");
@@ -1560,7 +1560,7 @@ async function resolveBookmarkId(action) {
     const matches = await bookmarkSearch({ url: searchUrl });
     for (const node of matches) {
       if ((locator.title ? node.title === locator.title : true) &&
-          (locator.folder_path ? await nodeParentPath(node.parentId) === locator.folder_path : true)) {
+          (locator.folder_path ? await nodeParentPath(node.parentId, idToPath) === locator.folder_path : true)) {
         return node.id;
       }
     }
@@ -1579,7 +1579,7 @@ async function resolveBookmarkId(action) {
     const normalizedNodeUrl = normalizeUrl(node.url || "");
     if (
       (locator.normalized_url ? normalizedNodeUrl === locator.normalized_url : true) &&
-      (locator.folder_path ? await nodeParentPath(node.parentId) === locator.folder_path : true)
+      (locator.folder_path ? await nodeParentPath(node.parentId, idToPath) === locator.folder_path : true)
     ) {
       return node.id;
     }
@@ -1587,7 +1587,7 @@ async function resolveBookmarkId(action) {
   return "";
 }
 
-async function bookmarkNodeMatchesLocator(node, action) {
+async function bookmarkNodeMatchesLocator(node, action, idToPath = null) {
   const locator = action.bookmark_locator || {};
   if (locator.title && node.title !== locator.title) {
     return false;
@@ -1598,20 +1598,20 @@ async function bookmarkNodeMatchesLocator(node, action) {
   if (locator.normalized_url && normalizeUrl(node.url || "") !== locator.normalized_url) {
     return false;
   }
-  if (locator.folder_path && await nodeParentPath(node.parentId) !== locator.folder_path) {
+  if (locator.folder_path && await nodeParentPath(node.parentId, idToPath) !== locator.folder_path) {
     return false;
   }
   return true;
 }
 
-async function folderNodeMatchesLocator(node, action) {
+async function folderNodeMatchesLocator(node, action, idToPath = null) {
   const locator = action.folder_locator || {};
   if (locator.name && node.title !== locator.name) {
     return false;
   }
   const expectedPath = expectedFolderPath(action);
   if (expectedPath) {
-    const parentPath = await nodeParentPath(node.parentId);
+    const parentPath = await nodeParentPath(node.parentId, idToPath);
     const actualPath = `${parentPath}/${node.title || ""}`.replace(/\/+/g, "/");
     return actualPath === expectedPath;
   }
@@ -1623,9 +1623,12 @@ function expectedFolderPath(action) {
   return locator.path || action.from_path || "";
 }
 
-async function nodeParentPath(parentId) {
+async function nodeParentPath(parentId, idPathIndex = null) {
   if (!parentId) {
     return "";
+  }
+  if (idPathIndex && idPathIndex.has(parentId)) {
+    return idPathIndex.get(parentId);
   }
   const chain = [];
   let currentId = parentId;
@@ -1641,7 +1644,7 @@ async function nodeParentPath(parentId) {
   return `/${chain.filter(Boolean).join("/")}`;
 }
 
-async function ensureFolderPath(folderPath, folderPathIndex = null) {
+async function ensureFolderPath(folderPath, folderPathIndex = null, idToPath = null) {
   const parts = folderPath.split("/").filter(Boolean);
   if (parts.length === 0) {
     throw new Error("folder path must not be empty");
@@ -1670,6 +1673,9 @@ async function ensureFolderPath(folderPath, folderPathIndex = null) {
         });
         nextId = next.id;
         folderPathIndex.set(path, nextId);
+        if (idToPath) {
+          idToPath.set(nextId, path);
+        }
         createdFolders.push({
           id: nextId,
           parentId: currentId,
@@ -1741,7 +1747,8 @@ function resolvePathToFolderId(root, folderPath, folderPathIndex = null) {
 }
 
 function buildFolderPathIndex(root) {
-  const index = new Map();
+  const pathToId = new Map();
+  const idToPath = new Map();
 
   function visit(node, parentPath) {
     if (!node || node.url) {
@@ -1749,7 +1756,8 @@ function buildFolderPathIndex(root) {
     }
     const path = node.title ? `${parentPath}/${node.title}`.replace(/\/+/g, "/") : parentPath;
     if (node.id !== "0" && path) {
-      index.set(path, node.id);
+      pathToId.set(path, node.id);
+      idToPath.set(node.id, path);
     }
     for (const child of node.children || []) {
       visit(child, path);
@@ -1757,10 +1765,10 @@ function buildFolderPathIndex(root) {
   }
 
   visit(root, "");
-  return index;
+  return { pathToId, idToPath };
 }
 
-function updateFolderPathIndexPrefix(folderPathIndex, oldPrefix, newPrefix) {
+function updateFolderPathIndexPrefix(folderPathIndex, oldPrefix, newPrefix, idToPath = null) {
   if (!oldPrefix || !newPrefix || oldPrefix === newPrefix) {
     return;
   }
@@ -1773,16 +1781,23 @@ function updateFolderPathIndexPrefix(folderPathIndex, oldPrefix, newPrefix) {
   for (const [oldPath, newPath, id] of updates) {
     folderPathIndex.delete(oldPath);
     folderPathIndex.set(newPath, id);
+    if (idToPath) {
+      idToPath.set(id, newPath);
+    }
   }
 }
 
-function removeFolderPathIndexPrefix(folderPathIndex, prefix) {
+function removeFolderPathIndexPrefix(folderPathIndex, prefix, idToPath = null) {
   if (!prefix) {
     return;
   }
   for (const path of Array.from(folderPathIndex.keys())) {
     if (path === prefix || path.startsWith(`${prefix}/`)) {
+      const id = folderPathIndex.get(path);
       folderPathIndex.delete(path);
+      if (idToPath) {
+        idToPath.delete(id);
+      }
     }
   }
 }
