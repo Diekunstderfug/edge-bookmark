@@ -5,6 +5,18 @@ var LAST_REPORT_STORAGE_NAME = "bookmarkAdvisorLastReport";
 var ACTIVE_JOB_STORAGE_NAME = "bookmarkAdvisorActiveJob";
 var UNDO_LOG_STORAGE_NAME = "bookmarkAdvisorUndoLog";
 
+function debugLog(message, level) {
+  var logLevel = level || "log";
+  var prefix = "[BookmarkAdvisor]";
+  if (logLevel === "error") {
+    console.error(prefix, message);
+  } else if (logLevel === "warn") {
+    console.warn(prefix, message);
+  } else {
+    console.log(prefix, message);
+  }
+}
+
 function chromeStorageSet(key, value) {
   return new Promise(function (resolve, reject) {
     chrome.storage.local.set({ [key]: value }, function () {
@@ -69,4 +81,5 @@ if (typeof globalThis !== "undefined") {
   globalThis.saveLastPlan = saveLastPlan;
   globalThis.saveLastReport = saveLastReport;
   globalThis.pathWithinScope = pathWithinScope;
+  globalThis.debugLog = debugLog;
 }

@@ -11,6 +11,19 @@
  */
 
 (function (globalScope) {
+  // ── Shared logging utility ──
+  function debugLog(message, level) {
+    var logLevel = level || "log";
+    var prefix = "[BookmarkAdvisor]";
+    if (logLevel === "error") {
+      console.error(prefix, message);
+    } else if (logLevel === "warn") {
+      console.warn(prefix, message);
+    } else {
+      console.log(prefix, message);
+    }
+  }
+
   let _currentJobId = null;
   let _abortController = null;
 
@@ -21,8 +34,7 @@
     try {
       await chrome.runtime.sendMessage({ type, jobId, ...data });
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[BookmarkAdvisor][offscreen] sendToSw(${type}) failed:`, err?.message || err);
+      debugLog(`sendToSw(${type}) failed: ` + (err?.message || err), "error");
       throw err;
     }
   }
@@ -37,11 +49,9 @@
         timestamp: Date.now(),
       };
       const size = JSON.stringify(payload).length;
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] persistOffscreenResult size=${size} chars`);
+      debugLog(`persistOffscreenResult size=${size} chars`, "log");
       if (size > 7 * 1024 * 1024) {
-        // eslint-disable-next-line no-console
-        console.warn(`[BookmarkAdvisor][offscreen] result too large (${Math.round(size / 1024 / 1024)}MB), skipping storage persist`);
+        debugLog(`result too large (${Math.round(size / 1024 / 1024)}MB), skipping storage persist`, "warn");
         return;
       }
       // storage 写入加 5 秒超时，防止卡住
@@ -49,11 +59,9 @@
         chrome.storage.local.set({ [OFFSCREEN_RESULT_STORAGE]: payload }),
         new Promise((_, reject) => setTimeout(() => reject(new Error("storage persist timeout")), 5000)),
       ]);
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] persistOffscreenResult done`);
+      debugLog(`persistOffscreenResult done`, "log");
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(`[BookmarkAdvisor][offscreen] persistOffscreenResult failed (non-fatal):`, err?.message || err);
+      debugLog(`persistOffscreenResult failed (non-fatal): ` + (err?.message || err), "warn");
     }
   }
 
@@ -68,34 +76,27 @@
   }
 
   async function handleGenerate(jobId, payload) {
-    // eslint-disable-next-line no-console
-    console.log(`[BookmarkAdvisor][offscreen] handleGenerate start, jobId=${jobId}`);
+    debugLog(`handleGenerate start, jobId=${jobId}`, "log");
     const onProgress = makeProgressCallback(jobId);
     _abortController = new AbortController();
     try {
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] calling generateReviewedPlan...`);
+      debugLog(`calling generateReviewedPlan...`, "log");
       const result = await globalScope.BookmarkAdvisorAI.generateReviewedPlan({
         ...payload,
         onProgress,
         signal: _abortController.signal,
       });
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] generateReviewedPlan returned, persisting result...`);
+      debugLog(`generateReviewedPlan returned, persisting result...`, "log");
       await persistOffscreenResult(jobId, { ok: true, result });
       try {
-        // eslint-disable-next-line no-console
-        console.log(`[BookmarkAdvisor][offscreen] result persisted, sending offscreen-result to SW...`);
+        debugLog(`result persisted, sending offscreen-result to SW...`, "log");
         await sendToSw("offscreen-result", jobId, { result });
-        // eslint-disable-next-line no-console
-        console.log(`[BookmarkAdvisor][offscreen] offscreen-result sent to SW`);
+        debugLog(`offscreen-result sent to SW`, "log");
       } catch (notifyError) {
-        // eslint-disable-next-line no-console
-        console.warn(`[BookmarkAdvisor][offscreen] offscreen-result notify failed after persist (non-fatal):`, notifyError?.message || notifyError);
+        debugLog(`offscreen-result notify failed after persist (non-fatal): ` + (notifyError?.message || notifyError), "warn");
       }
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error(`[BookmarkAdvisor][offscreen] handleGenerate error:`, error);
+      debugLog(`handleGenerate error: ` + error, "error");
       const errorPayload = {
         error: error.message || String(error),
         abortLike: error.name === "AbortError" || /aborted|cancelled by user/i.test(error.message || ""),
@@ -105,41 +106,33 @@
     } finally {
       _currentJobId = null;
       _abortController = null;
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] handleGenerate cleanup done`);
+      debugLog(`handleGenerate cleanup done`, "log");
     }
   }
 
   async function handleRevise(jobId, payload) {
-    // eslint-disable-next-line no-console
-    console.log(`[BookmarkAdvisor][offscreen] handleRevise start, jobId=${jobId}`);
+    debugLog(`handleRevise start, jobId=${jobId}`, "log");
     const onProgress = makeProgressCallback(jobId);
     _abortController = new AbortController();
     try {
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] calling reviseReviewedPlan...`);
+      debugLog(`calling reviseReviewedPlan...`, "log");
       const result = await globalScope.BookmarkAdvisorAI.reviseReviewedPlan({
         ...payload.options,
         existingPlan: payload.plan,
         onProgress,
         signal: _abortController.signal,
       });
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] reviseReviewedPlan returned, persisting result...`);
+      debugLog(`reviseReviewedPlan returned, persisting result...`, "log");
       await persistOffscreenResult(jobId, { ok: true, result });
       try {
-        // eslint-disable-next-line no-console
-        console.log(`[BookmarkAdvisor][offscreen] result persisted, sending offscreen-result to SW...`);
+        debugLog(`result persisted, sending offscreen-result to SW...`, "log");
         await sendToSw("offscreen-result", jobId, { result });
-        // eslint-disable-next-line no-console
-        console.log(`[BookmarkAdvisor][offscreen] offscreen-result sent to SW`);
+        debugLog(`offscreen-result sent to SW`, "log");
       } catch (notifyError) {
-        // eslint-disable-next-line no-console
-        console.warn(`[BookmarkAdvisor][offscreen] offscreen-result notify failed after persist (non-fatal):`, notifyError?.message || notifyError);
+        debugLog(`offscreen-result notify failed after persist (non-fatal): ` + (notifyError?.message || notifyError), "warn");
       }
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error(`[BookmarkAdvisor][offscreen] handleRevise error:`, error);
+      debugLog(`handleRevise error: ` + error, "error");
       const errorPayload = {
         error: error.message || String(error),
         abortLike: error.name === "AbortError" || /aborted|cancelled by user/i.test(error.message || ""),
@@ -149,8 +142,7 @@
     } finally {
       _currentJobId = null;
       _abortController = null;
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] handleRevise cleanup done`);
+      debugLog(`handleRevise cleanup done`, "log");
     }
   }
 

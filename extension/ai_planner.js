@@ -23,6 +23,19 @@
   // ── Fast rules: loaded from packaged JSON, cached after first load ──
   var _fastRulesCache = null;
 
+  // ── Shared logging utility ──
+  function debugLog(message, level) {
+    var logLevel = level || "log";
+    var prefix = "[BookmarkAdvisor]";
+    if (logLevel === "error") {
+      console.error(prefix, message);
+    } else if (logLevel === "warn") {
+      console.warn(prefix, message);
+    } else {
+      console.log(prefix, message);
+    }
+  }
+
   var _FALLBACK_RULES = {
     defaults: { protect_root_loose_bookmarks: true, allow_new_folders_in_advise: true },
     protected_paths: ["/收藏夹栏", "/其他收藏夹", "/移动收藏夹", "/工作区"],
@@ -113,11 +126,9 @@
     try {
       const t0 = performance.now();
       draft = compileActivationPlan(activationPayload, planningSnapshot);
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] compileActivationPlan done, actions=${draft.actions.length}, ${Math.round(performance.now() - t0)}ms`);
+      debugLog(`compileActivationPlan done, actions=${draft.actions.length}, ` + Math.round(performance.now() - t0) + "ms", "log");
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[BookmarkAdvisor][offscreen] compileActivationPlan FAILED:`, err);
+      debugLog(`compileActivationPlan FAILED: ` + err, "error");
       throw err;
     }
 
@@ -131,17 +142,14 @@
         model,
         autoApproveThreshold,
       });
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] finalizeDraftPlan done, ${Math.round(performance.now() - t0)}ms`);
+      debugLog(`finalizeDraftPlan done, ` + Math.round(performance.now() - t0) + "ms", "log");
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[BookmarkAdvisor][offscreen] finalizeDraftPlan FAILED:`, err);
+      debugLog(`finalizeDraftPlan FAILED: ` + err, "error");
       throw err;
     }
 
     await onProgress("Plan ready.");
-    // eslint-disable-next-line no-console
-    console.log(`[BookmarkAdvisor][offscreen] generateReviewedPlan complete, returning result`);
+    debugLog(`generateReviewedPlan complete, returning result`, "log");
     return {
       reviewed_plan: reviewedPlan,
       draft_summary: activationPayload.summary || {},
@@ -209,11 +217,9 @@
     try {
       const t0 = performance.now();
       draft = compileActivationPlan(activationPayload, planningSnapshot);
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] compileActivationPlan done, actions=${draft.actions.length}, ${Math.round(performance.now() - t0)}ms`);
+      debugLog(`compileActivationPlan done, actions=${draft.actions.length}, ` + Math.round(performance.now() - t0) + "ms", "log");
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[BookmarkAdvisor][offscreen] compileActivationPlan FAILED:`, err);
+      debugLog(`compileActivationPlan FAILED: ` + err, "error");
       throw err;
     }
 
@@ -227,16 +233,13 @@
         model,
         autoApproveThreshold,
       });
-      // eslint-disable-next-line no-console
-      console.log(`[BookmarkAdvisor][offscreen] finalizeDraftPlan done, ${Math.round(performance.now() - t0)}ms`);
+      debugLog(`finalizeDraftPlan done, ` + Math.round(performance.now() - t0) + "ms", "log");
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[BookmarkAdvisor][offscreen] finalizeDraftPlan FAILED:`, err);
+      debugLog(`finalizeDraftPlan FAILED: ` + err, "error");
       throw err;
     }
     await onProgress("Plan ready.");
-    // eslint-disable-next-line no-console
-    console.log(`[BookmarkAdvisor][offscreen] reviseReviewedPlan complete, returning result`);
+    debugLog(`reviseReviewedPlan complete, returning result`, "log");
     reviewedPlan.summary = {
       ...reviewedPlan.summary,
       overview: String((activationPayload.summary || {}).overview || "Revised in the Edge extension via HTTPS."),
@@ -677,11 +680,10 @@
           finalize_reason: "below-threshold",
         },
       };
-    }).map((action, index) => ({ ...action, action_id: `a-${String(index + 1).padStart(4, "0")}` }));
+    });
 
     const elapsed = Math.round(performance.now() - t0);
-    // eslint-disable-next-line no-console
-    console.log(`[BookmarkAdvisor] finalizeDraftPlan: ${finalized.length} actions, ${elapsed}ms`);
+    debugLog(`finalizeDraftPlan: ${finalized.length} actions, ${elapsed}ms`, "log");
 
     return {
       plan_version: "2",
