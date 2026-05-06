@@ -24,6 +24,7 @@ def _last_json_line(output: str) -> str:
 class ExtensionEndpointUrlTest(unittest.TestCase):
     def _node_eval(self, expression: str) -> object:
         script = (
+            f"require({json.dumps(str(_REPO_ROOT / 'extension' / 'action_constants.js'))});\n"
             f"require({json.dumps(str(_AI_PLANNER))});\n"
             f"const result = {expression};\n"
             "console.log(JSON.stringify(result));\n"
@@ -39,7 +40,10 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         return cast(object, json.loads(_last_json_line(completed.stdout)))
 
     def _node_script(self, body: str) -> object:
-        script = f"require({json.dumps(str(_AI_PLANNER))});\n{body}\n"
+        script = (
+            f"require({json.dumps(str(_REPO_ROOT / 'extension' / 'action_constants.js'))});\n"
+            f"require({json.dumps(str(_AI_PLANNER))});\n{body}\n"
+        )
         completed = subprocess.run(
             ["node", "-e", script],
             check=True,

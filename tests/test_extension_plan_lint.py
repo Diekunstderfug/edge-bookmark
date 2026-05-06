@@ -17,6 +17,7 @@ _PLAN_LINT = _REPO_ROOT / "extension" / "plan_lint.js"
 class ExtensionPlanLintTest(unittest.TestCase):
     def _node_eval(self, expression: str) -> object:
         script = (
+            f"require({json.dumps(str(_REPO_ROOT / 'extension' / 'action_constants.js'))});\n"
             f"require({json.dumps(str(_PLAN_LINT))});\n"
             f"const result = {expression};\n"
             "console.log(JSON.stringify(result));\n"

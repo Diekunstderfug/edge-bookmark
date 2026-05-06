@@ -1,3 +1,5 @@
+/* global EXECUTABLE_ACTIONS, EXECUTION_ORDER, EXECUTABLE_STATUSES */
+
 (function attachBookmarkAdvisorAI(globalScope) {
   const DEFAULT_API_BASE_URL = "https://api.openai.com/v1";
   const DEFAULT_MODEL = "gpt-4o-mini";
@@ -17,14 +19,6 @@
     "delete_empty_folder",
     "keep_for_review",
   ];
-  const EXECUTABLE_ACTIONS = new Set([
-    "rename_folder",
-    "move_bookmark",
-    "move_folder",
-    "create_folder",
-    "remove_duplicate",
-    "delete_empty_folder",
-  ]);
 
   // ── Fast rules: loaded from packaged JSON, cached after first load ──
   var _fastRulesCache = null;

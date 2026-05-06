@@ -1,21 +1,12 @@
 importScripts("ai_planner.js");
 importScripts("storage_helpers.js");
+importScripts("action_constants.js");
 
-/* global ACTIVE_JOB_STORAGE_NAME, UNDO_LOG_STORAGE_NAME, BookmarkAdvisorAI, chromeStorageGet, chromeStorageRemove, chromeStorageSet, saveLastPlan, saveLastReport, pathWithinScope */
+/* global ACTIVE_JOB_STORAGE_NAME, UNDO_LOG_STORAGE_NAME, BookmarkAdvisorAI, chromeStorageGet, chromeStorageRemove, chromeStorageSet, saveLastPlan, saveLastReport, pathWithinScope, EXECUTION_ORDER, EXECUTABLE_ACTIONS, EXECUTABLE_STATUSES */
 
 const OFFSCREEN_DOCUMENT_URL = chrome.runtime.getURL("offscreen.html");
 const OFFSCREEN_RESULT_STORAGE_NAME = "bookmarkAdvisorOffscreenResult";
 
-const EXECUTION_ORDER = [
-  "rename_folder",
-  "delete_empty_folder",
-  "create_folder",
-  "move_folder",
-  "move_bookmark",
-  "remove_duplicate",
-  "keep_for_review",
-];
-const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
 const ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
 const STARTUP_JOB_STALE_MS = 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 180000;
@@ -1236,14 +1227,14 @@ function validateExecutablePlan(plan) {
     if (action.action_type === "keep_for_review") {
       continue;
     }
-    if (!EXECUTABLE_ACTIONS().has(action.action_type)) {
+    if (!EXECUTABLE_ACTIONS.has(action.action_type)) {
       throw new Error(`Unknown action_type: ${action.action_type}`);
     }
   }
 }
 
 function isExecutablePlanAction(plan, action) {
-  if (!EXECUTABLE_ACTIONS().has(action.action_type)) {
+  if (!EXECUTABLE_ACTIONS.has(action.action_type)) {
     return false;
   }
   if (!EXECUTABLE_STATUSES.has(resolveActionStatus(plan, action))) {
@@ -1836,10 +1827,6 @@ function bookmarkSearch(query) {
       resolve(results || []);
     });
   });
-}
-
-function EXECUTABLE_ACTIONS() {
-  return new Set(EXECUTION_ORDER);
 }
 
 function locatorLabel(action) {

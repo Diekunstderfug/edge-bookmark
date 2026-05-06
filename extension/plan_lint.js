@@ -1,13 +1,6 @@
+/* global EXECUTABLE_ACTIONS, EXECUTABLE_STATUSES */
+
 (function attachBookmarkPlanLint(globalScope) {
-  const EXECUTABLE_ACTIONS = new Set([
-    "rename_folder",
-    "create_folder",
-    "move_folder",
-    "move_bookmark",
-    "remove_duplicate",
-    "delete_empty_folder",
-  ]);
-  const EXECUTABLE_STATUSES = new Set(["approved", "edited"]);
   const KNOWN_ACTION_TYPES = new Set([...EXECUTABLE_ACTIONS, "keep_for_review"]);
   const KNOWN_ACTION_STATUSES = new Set(["approved", "edited", "proposed", "blocked"]);
   const KNOWN_PLAN_KEYS = new Set([
@@ -311,8 +304,6 @@
   }
 
   globalScope.BookmarkPlanLint = {
-    EXECUTABLE_ACTIONS,
-    EXECUTABLE_STATUSES,
     formatDiagnostic,
     lintPlan,
     parsePlanText,
