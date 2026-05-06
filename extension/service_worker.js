@@ -482,6 +482,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return undefined;
   }
 
+  if (message.type === "offscreen-ready") {
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message.type === "offscreen-result" || message.type === "offscreen-error") {
     consumeOffscreenCompletionMessage(message)
       .then((job) => sendResponse({ ok: true, recovered: !!job }))
