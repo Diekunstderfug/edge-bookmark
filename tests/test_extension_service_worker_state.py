@@ -1589,6 +1589,72 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["removeCalls"], 0)
         self.assertEqual(result["undoLogLength"], 0)
 
+    def test_execution_reuses_folder_path_index_for_repeated_destination_resolution(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let getTreeCalls = 0;
+        let createCalls = 0;
+        const moveCalls = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback({{
+              '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
+              '2': [{{ id: '2', title: 'AI', parentId: '1' }}],
+              '10': [{{ id: '10', title: 'A', url: 'https://a.example/', parentId: '1' }}],
+              '11': [{{ id: '11', title: 'B', url: 'https://b.example/', parentId: '1' }}]
+            }}[id] || []),
+            getTree: (callback) => {{
+              getTreeCalls += 1;
+              callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [
+                {{ id: '2', title: 'AI', children: [] }},
+                {{ id: '10', title: 'A', url: 'https://a.example/' }},
+                {{ id: '11', title: 'B', url: 'https://b.example/' }}
+              ] }}] }}]);
+            }},
+            getChildren: () => {{ throw new Error('folder index should avoid child refresh'); }},
+            create: (_opts, callback) => {{ createCalls += 1; callback({{ id: 'unexpected' }}); }},
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+          action_id: 'a-1', action_type: 'move_bookmark', status: 'approved', reason: 'move A', confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'A', url: 'https://a.example/', normalized_url: 'https://a.example/', folder_path: '/收藏夹栏' }},
+          from_path: '/收藏夹栏', to_path: '/收藏夹栏/AI'
+        }}, {{
+          action_id: 'a-2', action_type: 'move_bookmark', status: 'approved', reason: 'move B', confidence: 0.9,
+          bookmark_locator: {{ id: '11', title: 'B', url: 'https://b.example/', normalized_url: 'https://b.example/', folder_path: '/收藏夹栏' }},
+          from_path: '/收藏夹栏', to_path: '/收藏夹栏/AI'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            getTreeCalls,
+            createCalls,
+            moveCalls
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 2)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["getTreeCalls"], 1)
+        self.assertEqual(result["createCalls"], 0)
+        self.assertEqual(result["moveCalls"], [{"id": "10", "parentId": "2"}, {"id": "11", "parentId": "2"}])
+
     def test_create_folder_nested_records_only_created_folders_for_reverse_undo(self):
         script = f"""
         const path = require('path');

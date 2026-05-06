@@ -1076,13 +1076,15 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress,
 
   await assertJobNotCancelled(jobContext);
   await onProgress("Starting plan execution...");
+  const bookmarkTree = await bookmarkCall("getTree");
+  const folderPathIndex = buildFolderPathIndex(bookmarkTree && bookmarkTree[0]);
 
   let stoppedOnFailure = false;
   for (const actionType of EXECUTION_ORDER) {
     for (const action of grouped.get(actionType)) {
       await assertJobNotCancelled(jobContext);
       try {
-        await applyAction(action, focusPath, executionId);
+        await applyAction(action, focusPath, executionId, folderPathIndex);
         succeeded.push({
           actionId: action.action_id || "",
           actionType,
@@ -1377,7 +1379,7 @@ async function undoLastExecution() {
   };
 }
 
-async function applyAction(action, focusPath, executionId) {
+async function applyAction(action, focusPath, executionId, folderPathIndex = null) {
   const policy = checkActionPolicy(action, focusPath);
   if (!policy.allowed) {
     throw new Error(`Policy blocked: ${policy.reason}`);
@@ -1388,7 +1390,7 @@ async function applyAction(action, focusPath, executionId) {
       if (!action.target_path) {
         throw new Error("create_folder requires target_path");
       }
-      const folderResult = await ensureFolderPath(action.target_path);
+      const folderResult = await ensureFolderPath(action.target_path, folderPathIndex);
       if (executionId) {
         for (const folder of folderResult.createdFolders) {
           await recordUndo(executionId, action, folder, UNDO_DELETE_FOLDER);
@@ -1400,7 +1402,7 @@ async function applyAction(action, focusPath, executionId) {
       if (!action.to_name) {
         throw new Error("rename_folder requires to_name");
       }
-      const folderId = await resolveFolderId(action);
+      const folderId = await resolveFolderId(action, folderPathIndex);
       if (!folderId) {
         throw new Error("Could not resolve folder by locator");
       }
@@ -1409,10 +1411,15 @@ async function applyAction(action, focusPath, executionId) {
         await recordUndo(executionId, action, { id: folderId, title: folderNode.title }, UNDO_RENAME);
       }
       await bookmarkCall("update", folderId, { title: action.to_name });
+      if (folderPathIndex) {
+        const oldPath = expectedFolderPath(action) || `${await nodeParentPath(folderNode.parentId)}/${folderNode.title || ""}`.replace(/\/+/g, "/");
+        const newPath = `${await nodeParentPath(folderNode.parentId)}/${action.to_name}`.replace(/\/+/g, "/");
+        updateFolderPathIndexPrefix(folderPathIndex, oldPath, newPath);
+      }
       return;
     }
     case "delete_empty_folder": {
-      const folderId = await resolveFolderId(action);
+      const folderId = await resolveFolderId(action, folderPathIndex);
       if (!folderId) {
         throw new Error("Could not resolve folder by locator");
       }
@@ -1423,6 +1430,9 @@ async function applyAction(action, focusPath, executionId) {
       const [folderNode] = await bookmarkCall("get", folderId);
       const folderPath = expectedFolderPath(action) || `${await nodeParentPath(folderNode.parentId)}/${folderNode.title || ""}`.replace(/\/+/g, "/");
       await bookmarkCall("remove", folderId);
+      if (folderPathIndex) {
+        removeFolderPathIndexPrefix(folderPathIndex, folderPath);
+      }
       if (executionId) {
         await recordUndo(executionId, action, { id: folderId, path: folderPath, title: folderNode.title, parentId: folderNode.parentId }, UNDO_CREATE_FOLDER);
       }
@@ -1432,7 +1442,7 @@ async function applyAction(action, focusPath, executionId) {
       if (!action.to_path) {
         throw new Error("move_folder requires to_path");
       }
-      const srcFolderId = await resolveFolderId(action);
+      const srcFolderId = await resolveFolderId(action, folderPathIndex);
       if (!srcFolderId) {
         throw new Error("Could not resolve folder by locator");
       }
@@ -1441,11 +1451,16 @@ async function applyAction(action, focusPath, executionId) {
         throw new Error("move_folder destination must not be the source folder or its descendant");
       }
       const [srcNode] = await bookmarkCall("get", srcFolderId);
-      const destFolderId = (await ensureFolderPath(action.to_path)).id;
+      const destFolderId = (await ensureFolderPath(action.to_path, folderPathIndex)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: srcFolderId, parentId: srcNode.parentId, title: srcNode.title }, UNDO_MOVE);
       }
       await bookmarkCall("move", srcFolderId, { parentId: destFolderId });
+      if (folderPathIndex) {
+        const oldPath = fromPath || `${await nodeParentPath(srcNode.parentId)}/${srcNode.title || ""}`.replace(/\/+/g, "/");
+        const newPath = `${action.to_path}/${srcNode.title || ""}`.replace(/\/+/g, "/");
+        updateFolderPathIndexPrefix(folderPathIndex, oldPath, newPath);
+      }
       return;
     }
     case "move_bookmark": {
@@ -1457,7 +1472,7 @@ async function applyAction(action, focusPath, executionId) {
         throw new Error("Could not resolve bookmark by locator");
       }
       const [node] = await bookmarkCall("get", bookmarkId);
-      const destinationFolderId = (await ensureFolderPath(action.to_path)).id;
+      const destinationFolderId = (await ensureFolderPath(action.to_path, folderPathIndex)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: bookmarkId, parentId: node.parentId, title: node.title, url: node.url || null }, UNDO_MOVE);
       }
@@ -1474,7 +1489,7 @@ async function applyAction(action, focusPath, executionId) {
       if (focusPath && !pathWithinScope(sourcePath, focusPath)) {
         throw new Error(`remove_duplicate source ${sourcePath} is outside focus scope ${focusPath}`);
       }
-      const quarantineFolderId = (await ensureFolderPath(QUARANTINE_FOLDER_PATH)).id;
+      const quarantineFolderId = (await ensureFolderPath(QUARANTINE_FOLDER_PATH, folderPathIndex)).id;
       if (executionId) {
         await recordUndo(executionId, action, { id: dupBookmarkId, parentId: dupNode.parentId, title: dupNode.title, url: dupNode.url || null }, UNDO_MOVE);
       }
@@ -1488,7 +1503,7 @@ async function applyAction(action, focusPath, executionId) {
   }
 }
 
-async function resolveFolderId(action) {
+async function resolveFolderId(action, folderPathIndex = null) {
   const locator = action.folder_locator || {};
   const candidateId = locator.id || action.folder_id || "";
   if (candidateId) {
@@ -1506,12 +1521,15 @@ async function resolveFolderId(action) {
     }
   }
 
-  const tree = await bookmarkCall("getTree");
   const path = locator.path || action.from_path || "";
   if (!path) {
     return "";
   }
-  return resolvePathToFolderId(tree[0], path);
+  if (folderPathIndex && folderPathIndex.has(path)) {
+    return folderPathIndex.get(path);
+  }
+  const tree = await bookmarkCall("getTree");
+  return resolvePathToFolderId(tree[0], path, folderPathIndex);
 }
 
 async function resolveBookmarkId(action) {
@@ -1623,12 +1641,47 @@ async function nodeParentPath(parentId) {
   return `/${chain.filter(Boolean).join("/")}`;
 }
 
-async function ensureFolderPath(folderPath) {
+async function ensureFolderPath(folderPath, folderPathIndex = null) {
   const parts = folderPath.split("/").filter(Boolean);
   if (parts.length === 0) {
     throw new Error("folder path must not be empty");
   }
   const createdFolders = [];
+
+  if (folderPathIndex && folderPathIndex.has(folderPath)) {
+    return { id: folderPathIndex.get(folderPath), createdFolders };
+  }
+
+  if (folderPathIndex) {
+    const rootPath = `/${parts[0]}`;
+    let currentId = folderPathIndex.get(rootPath);
+    if (!currentId) {
+      throw new Error(`Could not resolve root folder: ${parts[0]}`);
+    }
+
+    for (let index = 1; index < parts.length; index += 1) {
+      const path = `/${parts.slice(0, index + 1).join("/")}`;
+      let nextId = folderPathIndex.get(path);
+      if (!nextId) {
+        const part = parts[index];
+        const next = await bookmarkCall("create", {
+          parentId: currentId,
+          title: part,
+        });
+        nextId = next.id;
+        folderPathIndex.set(path, nextId);
+        createdFolders.push({
+          id: nextId,
+          parentId: currentId,
+          title: next.title || part,
+          path,
+        });
+      }
+      currentId = nextId;
+    }
+
+    return { id: currentId, createdFolders };
+  }
 
   const tree = await bookmarkCall("getTree");
   const root = tree[0];
@@ -1666,8 +1719,14 @@ async function ensureFolderPath(folderPath) {
   return { id: current.id, createdFolders };
 }
 
-function resolvePathToFolderId(root, folderPath) {
+function resolvePathToFolderId(root, folderPath, folderPathIndex = null) {
+  if (folderPathIndex && folderPathIndex.has(folderPath)) {
+    return folderPathIndex.get(folderPath);
+  }
   const parts = folderPath.split("/").filter(Boolean);
+  if (!root || parts.length === 0) {
+    return "";
+  }
   let current = (root.children || []).find((node) => node.title === parts[0]);
   if (!current) {
     return "";
@@ -1679,6 +1738,53 @@ function resolvePathToFolderId(root, folderPath) {
     }
   }
   return current.id;
+}
+
+function buildFolderPathIndex(root) {
+  const index = new Map();
+
+  function visit(node, parentPath) {
+    if (!node || node.url) {
+      return;
+    }
+    const path = node.title ? `${parentPath}/${node.title}`.replace(/\/+/g, "/") : parentPath;
+    if (node.id !== "0" && path) {
+      index.set(path, node.id);
+    }
+    for (const child of node.children || []) {
+      visit(child, path);
+    }
+  }
+
+  visit(root, "");
+  return index;
+}
+
+function updateFolderPathIndexPrefix(folderPathIndex, oldPrefix, newPrefix) {
+  if (!oldPrefix || !newPrefix || oldPrefix === newPrefix) {
+    return;
+  }
+  const updates = [];
+  for (const [path, id] of folderPathIndex.entries()) {
+    if (path === oldPrefix || path.startsWith(`${oldPrefix}/`)) {
+      updates.push([path, path.replace(oldPrefix, newPrefix), id]);
+    }
+  }
+  for (const [oldPath, newPath, id] of updates) {
+    folderPathIndex.delete(oldPath);
+    folderPathIndex.set(newPath, id);
+  }
+}
+
+function removeFolderPathIndexPrefix(folderPathIndex, prefix) {
+  if (!prefix) {
+    return;
+  }
+  for (const path of Array.from(folderPathIndex.keys())) {
+    if (path === prefix || path.startsWith(`${prefix}/`)) {
+      folderPathIndex.delete(path);
+    }
+  }
 }
 
 function bookmarkCall(method, ...args) {
