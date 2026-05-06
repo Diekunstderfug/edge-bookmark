@@ -1422,10 +1422,10 @@ async function applyAction(action, focusPath, executionId) {
       }
       const [folderNode] = await bookmarkCall("get", folderId);
       const folderPath = expectedFolderPath(action) || `${await nodeParentPath(folderNode.parentId)}/${folderNode.title || ""}`.replace(/\/+/g, "/");
-      if (executionId) {
-        await recordUndo(executionId, action, { id: folderId, path: folderPath, title: folderNode.title }, UNDO_CREATE_FOLDER);
-      }
       await bookmarkCall("remove", folderId);
+      if (executionId) {
+        await recordUndo(executionId, action, { id: folderId, path: folderPath, title: folderNode.title, parentId: folderNode.parentId }, UNDO_CREATE_FOLDER);
+      }
       return;
     }
     case "move_folder": {

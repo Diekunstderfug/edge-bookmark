@@ -1722,6 +1722,83 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         const storage = {{}};
         let listener = null;
         const removed = [];
+        const created = [];
+        const nodes = {{
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }},
+          '20': {{ id: '20', title: 'Empty', parentId: '1' }}
+        }};
+        function childrenOf(parentId) {{
+          return Object.values(nodes).filter((node) => node.parentId === parentId);
+        }}
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getChildren: (id, callback) => callback(id === '20' ? [] : childrenOf(id)),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ ...nodes['1'], children: childrenOf('1') }}] }}]),
+            create: (opts, callback) => {{
+              const id = '30';
+              nodes[id] = {{ id, title: opts.title, parentId: opts.parentId }};
+              created.push({{ id, title: opts.title, parentId: opts.parentId }});
+              callback(nodes[id]);
+            }},
+            remove: (id, callback) => {{ removed.push(id); delete nodes[id]; if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        new Promise((resolve) => {{
+          listener({{ type: 'apply-reviewed-plan', plan: {{ actions: [{{
+            action_id: 'a-1',
+            action_type: 'delete_empty_folder',
+            status: 'approved',
+            reason: 'empty folder no longer needed',
+            confidence: 0.9,
+            folder_locator: {{ id: '20', name: 'Empty', path: '/收藏夹栏/Empty' }},
+            from_path: '/收藏夹栏/Empty'
+          }}] }} }}, null, (response) => resolve(response));
+        }}).then((response) => new Promise((resolve) => {{
+          const undoLog = storage.bookmarkAdvisorUndoLog || [];
+          listener({{ type: 'undo-last-execution' }}, null, (undoResponse) => resolve({{ response, undoLog, undoResponse }}));
+        }})).then(({{ response, undoLog, undoResponse }}) => {{
+          const restored = Object.values(nodes).find((node) => node.parentId === '1' && node.title === 'Empty');
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            removed,
+            created: created.length,
+            undoType: undoLog[0] && undoLog[0].undo_action.type,
+            undoPath: undoLog[0] && undoLog[0].undo_action.path,
+            undoCount: undoResponse.count,
+            restoredTitle: restored && restored.title
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["removed"], ["20"])
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["undoType"], "create_folder")
+        self.assertEqual(result["undoPath"], "/收藏夹栏/Empty")
+        self.assertEqual(result["undoCount"], 1)
+        self.assertEqual(result["restoredTitle"], "Empty")
+
+    def test_delete_empty_folder_does_not_record_undo_when_remove_fails(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let removeCalls = 0;
         const nodes = {{
           '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }},
           '20': {{ id: '20', title: 'Empty', parentId: '1' }}
@@ -1740,7 +1817,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getChildren: (id, callback) => callback(id === '20' ? [] : [nodes['20']]),
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '20', title: 'Empty', children: [] }}] }}] }}]),
-            remove: (id, callback) => {{ removed.push(id); if (callback) callback(); }}
+            remove: (_id, _callback) => {{ removeCalls += 1; throw new Error('remove failed'); }}
           }}
         }};
         require(serviceWorkerPath);
@@ -1753,22 +1830,21 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           folder_locator: {{ id: '20', name: 'Empty', path: '/收藏夹栏/Empty' }},
           from_path: '/收藏夹栏/Empty'
         }}] }} }}, null, (response) => {{
-          const undoLog = storage.bookmarkAdvisorUndoLog || [];
           console.log(JSON.stringify({{
             succeeded: response.succeeded.length,
             failures: response.failures.length,
-            removed,
-            undoType: undoLog[0] && undoLog[0].undo_action.type,
-            undoPath: undoLog[0] && undoLog[0].undo_action.path
+            removeCalls,
+            undoLogLength: (storage.bookmarkAdvisorUndoLog || []).length,
+            error: response.failures[0] && response.failures[0].error
           }}));
         }});
         """
         result = cast(dict[str, object], self._node_script(script))
-        self.assertEqual(result["succeeded"], 1)
-        self.assertEqual(result["failures"], 0)
-        self.assertEqual(result["removed"], ["20"])
-        self.assertEqual(result["undoType"], "create_folder")
-        self.assertEqual(result["undoPath"], "/收藏夹栏/Empty")
+        self.assertEqual(result["succeeded"], 0)
+        self.assertEqual(result["failures"], 1)
+        self.assertEqual(result["removeCalls"], 1)
+        self.assertEqual(result["undoLogLength"], 0)
+        self.assertIn("remove failed", str(result["error"]))
 
     def test_delete_empty_folder_rejects_non_empty_folder(self):
         script = f"""
