@@ -64,9 +64,29 @@ function saveLastReport(report) {
   return chromeStorageSet(LAST_REPORT_STORAGE_NAME, report);
 }
 
+function normalizePath(path) {
+  if (!path || typeof path !== 'string') return '/';
+
+  let normalized = path.trim();
+
+  if (!normalized.startsWith('/')) {
+    normalized = '/' + normalized;
+  }
+
+  normalized = normalized.replace(/\/+$/, '');
+
+  normalized = normalized.replace(/\/+/g, '/');
+
+  if (normalized === '') normalized = '/';
+
+  return normalized;
+}
+
 function pathWithinScope(path, scope) {
   if (!scope) return true;
-  return path === scope || path.startsWith(scope + "/");
+  const normPath = normalizePath(path);
+  const normScope = normalizePath(scope);
+  return normPath === normScope || normPath.startsWith(normScope + "/");
 }
 
 /* Ensure visibility when loaded via Node require() in tests. */
@@ -80,6 +100,7 @@ if (typeof globalThis !== "undefined") {
   globalThis.chromeStorageRemove = chromeStorageRemove;
   globalThis.saveLastPlan = saveLastPlan;
   globalThis.saveLastReport = saveLastReport;
+  globalThis.normalizePath = normalizePath;
   globalThis.pathWithinScope = pathWithinScope;
   globalThis.debugLog = debugLog;
 }

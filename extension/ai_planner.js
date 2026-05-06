@@ -931,9 +931,29 @@
     return typeof path === "string" && path.startsWith("/") && path.length > 1;
   }
 
+  function normalizePath(path) {
+    if (!path || typeof path !== 'string') return '/';
+
+    let normalized = path.trim();
+
+    if (!normalized.startsWith('/')) {
+      normalized = '/' + normalized;
+    }
+
+    normalized = normalized.replace(/\/+$/, '');
+
+    normalized = normalized.replace(/\/+/g, '/');
+
+    if (normalized === '') normalized = '/';
+
+    return normalized;
+  }
+
   function pathInFocusScope(path, focusPath) {
     if (!focusPath) return true;
-    return path === focusPath || path.startsWith(`${focusPath}/`);
+    const normPath = normalizePath(path);
+    const normFocus = normalizePath(focusPath);
+    return normPath === normFocus || normPath.startsWith(normFocus + "/");
   }
 
   function applyActionGuardrails(action, bookmarkIndex) {
