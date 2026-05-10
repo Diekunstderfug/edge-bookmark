@@ -22,7 +22,7 @@ The extension has no build step and no SDK dependency. It uses raw `fetch` again
 
 ## Adjusting Preferences
 
-The **Plan** tab and **LLM** tab expose settings that affect plan generation and execution:
+The popup has three tabs. Each controls different aspects of the tool:
 
 **Plan tab:**
 - **Scope** — restrict planning and execution to a single folder tree. Leave empty to plan across all folders.
@@ -34,12 +34,11 @@ The **Plan** tab and **LLM** tab expose settings that affect plan generation and
 - **Request timeout** — max wait per LLM call in seconds (10–300, default 120). MV3 caps the total at 300s.
 - **Max retries** — how many times to retry after a lint failure (0–3, default 1). Set to 0 for no retries.
 
-**Why aren't root-level bookmarks being moved?**
-
-By default `config/rules.yaml` sets `protect_root_loose_bookmarks: true`. This keeps bookmarks sitting directly under protected roots (`/收藏夹栏`, `/其他收藏夹`, etc.) in place, because moving them without context is risky. To let the AI reorganize them, either:
-
-1. Edit `config/rules.yaml` and set `protect_root_loose_bookmarks: false`, or
-2. Use **Scope** to focus on a specific subfolder — everything inside that folder tree is fair game regardless of this setting.
+**Preferences tab:**
+- **Language** — UI language: Chinese or English (default Chinese).
+- **Root loose bookmark protection** — when **on** (default), bookmarks sitting directly under root folders (`/收藏夹栏`, `/其他收藏夹`, etc.) are left in place. Switch to **off** if you want the AI to move them into subfolders.
+- **Sort order** — how bookmarks are ordered after reorganization: keep original order (default), sort by title A→Z, or Z→A.
+- **Planning style** — how aggressive the AI is: `balanced` (default, reasonable moves, uncertain items stay for review), `conservative` (only move high-confidence items), or `aggressive` (try to categorize everything, allow new folder creation).
 
 ## What Is Safe By Design
 
