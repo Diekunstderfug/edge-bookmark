@@ -52,6 +52,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
               remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
             }}
           }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             getTree: (callback) => callback([{{
               id: '0',
@@ -143,6 +144,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             createDocument: async () => ({{}}),
             hasDocument: async () => true
           }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           storage: {{ local: {{ set: () => {{}}, get: (_key, callback) => callback({{}}), remove: () => {{}} }} }}
         }};
         require(serviceWorkerPath);
@@ -182,6 +184,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             createDocument: async () => ({{}}),
             hasDocument: async () => false
           }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           storage: {{ local: {{ set: () => {{}}, get: (_key, callback) => callback({{}}), remove: () => {{}} }} }}
         }};
         require(serviceWorkerPath);
@@ -210,6 +213,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         global.chrome = {{
           runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
           storage: {{ local: {{ set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }}, get: (key, callback) => {{ callback({{ [key]: storage[key] }}); }}, remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }} }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
         }};
         global.fetch = async function (url) {{
@@ -270,6 +274,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         global.chrome = {{
           runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: () => {{}} }} }},
           storage: {{ local: {{ set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }}, get: (key, callback) => {{ callback({{ [key]: storage[key] }}); }}, remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }} }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
         }};
         storage.bookmarkAdvisorActiveJob = {{
@@ -349,6 +354,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           offscreen: {{
             closeDocument: async () => {{ closeDocumentCalls += 1; }}
           }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
         }};
         global.fetch = async function (url, options) {{
@@ -457,6 +463,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: () => {{ throw new Error('startup cleanup should not touch bookmarks'); }} }}
         }};
         require(serviceWorkerPath);
@@ -495,6 +502,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: () => {{ throw new Error('startup cleanup should not touch bookmarks'); }} }}
         }};
         require(serviceWorkerPath);
@@ -536,7 +544,8 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
-          }} }}
+          }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }}
         }};
         require(serviceWorkerPath);
         setTimeout(() => {{
@@ -577,6 +586,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: () => {{ throw new Error('late offscreen recovery should not touch bookmarks'); }} }}
         }};
         require(serviceWorkerPath);
@@ -627,6 +637,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: () => {{ throw new Error('popup lookup should not touch bookmarks'); }} }}
         }};
         require(serviceWorkerPath);
@@ -666,6 +677,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: () => {{ throw new Error('non-running recovery should not touch bookmarks'); }} }}
         }};
         require(serviceWorkerPath);
@@ -711,6 +723,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback({{
               '10': [{{ id: '10', title: 'Example 1', url: 'https://example.com', parentId: '1' }}],
@@ -820,6 +833,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback({{
               '10': [{{ id: '10', title: 'Example', url: 'https://example.com', parentId: '1' }}],
@@ -896,6 +910,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (_key, callback) => callback({{}}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: () => {{ throw new Error('should not reach executor before ack'); }} }}
         }};
         global.fetch = async () => {{ throw new Error('should not fetch before ack'); }};
@@ -934,6 +949,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: () => {{ throw new Error('should not execute while locked'); }} }}
         }};
         global.fetch = async () => {{ throw new Error('should not fetch while locked'); }};
@@ -963,6 +979,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => setTimeout(() => callback({{ [key]: storage[key] }}), 10),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: (callback) => {{ getTreeCalls += 1; callback([{{ id: '0', title: '', children: [] }}]); }} }}
         }};
         global.fetch = async () => {{
@@ -1012,6 +1029,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [] }}] }}]) }}
         }};
         global.fetch = async () => {{
@@ -1049,6 +1067,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: () => {{ throw new Error('should not execute while locked'); }} }}
         }};
         require(serviceWorkerPath);
@@ -1077,6 +1096,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             move: () => {{ moveCalls += 1; throw new Error('proposed should not move'); }},
             getTree: (callback) => callback([])
@@ -1118,6 +1138,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback([{{ id, title: 'Different', url: 'https://other.example/', parentId: '1' }}]),
             remove: () => {{ removeCalls += 1; }},
@@ -1159,6 +1180,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(id === '1' ? [{{ id: '1', title: '收藏夹栏', children: [] }}] : id === '99' ? [{{ id: '99', title: 'Example', url: 'https://example.com', parentId: '1' }}] : []),
             search: (_query, callback) => callback([{{ id: '99', title: 'Example', url: 'https://example.com', parentId: '1' }}]),
@@ -1201,6 +1223,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             getTree: (callback) => callback([{{ id: '0', title: '', children: [] }}])
           }}
@@ -1249,6 +1272,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'AI', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]),
@@ -1298,6 +1322,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
@@ -1348,6 +1373,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ removeCalls += 1; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
@@ -1392,6 +1418,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(id === '10' ? [{{ id: '10', title: 'Example', url: 'https://example.com', parentId: '1' }}] : id === '1' ? [{{ id: '1', title: '收藏夹栏', parentId: '0' }}] : []),
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
@@ -1440,6 +1467,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
@@ -1498,6 +1526,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
@@ -1557,6 +1586,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'AI', children: [] }}] }}] }}]),
             getChildren: (_id, callback) => callback([]),
@@ -1609,6 +1639,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback({{
               '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
@@ -1680,6 +1711,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ ...nodes['1'], children: childrenOf('1') }}] }}]),
             getChildren: (id, callback) => callback(childrenOf(id)),
@@ -1746,6 +1778,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             getTree: (callback) => callback([{{ id: '0', title: '', children: [] }}]),
             create: () => {{ bookmarkMutations += 1; throw new Error('noop should not mutate'); }},
@@ -1806,6 +1839,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getChildren: (id, callback) => callback(id === '20' ? [] : childrenOf(id)),
@@ -1879,6 +1913,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getChildren: (id, callback) => callback(id === '20' ? [] : [nodes['20']]),
@@ -1934,6 +1969,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
             getChildren: (id, callback) => callback(id === '20' ? [{{ id: '30', title: 'Child', url: 'https://example.com' }}] : [nodes['20']]),
@@ -1983,6 +2019,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (_id, callback) => callback([]),
             search: (query, callback) => {{ searchCalls.push(query); callback([]); }},
@@ -2038,6 +2075,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
         }};
         global.fetch = async function (url) {{
@@ -2105,6 +2143,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '2', title: 'Loose', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}] }}]) }}
         }};
         global.fetch = async function (url) {{
@@ -2170,7 +2209,8 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
-          }} }}
+          }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }}
         }};
         global.BookmarkAdvisorAI = {{
           generateReviewedPlan: async () => ({{ reviewed_plan: {{ actions: [{{ action_type: 'move_bookmark' }}] }} }}),
@@ -2247,6 +2287,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (key, callback) => {{ delete storage[key]; if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{ getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]) }}
         }};
         global.fetch = async function (url, options) {{
@@ -2332,6 +2373,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback({{
               '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
@@ -2404,6 +2446,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback({{
               '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
@@ -2467,6 +2510,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback({{
               '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],
@@ -2531,6 +2575,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
             get: (key, callback) => callback({{ [key]: storage[key] }}),
             remove: (_key, callback) => {{ if (callback) callback(); }}
           }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
             get: (id, callback) => callback({{
               '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}],

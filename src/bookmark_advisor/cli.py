@@ -91,7 +91,7 @@ def main() -> int:
     plan_ai_parser.add_argument("--rules")
     plan_ai_parser.add_argument("--out")
     plan_ai_parser.add_argument("--workspace", default=".")
-    plan_ai_parser.add_argument("--model", default="gpt-4o-mini")
+    plan_ai_parser.add_argument("--model", default="gpt-5.4-mini")
     plan_ai_parser.add_argument("--max-actions", type=int, default=40)
     plan_ai_parser.add_argument("--base-url")
     plan_ai_parser.add_argument(
@@ -113,7 +113,7 @@ def main() -> int:
 
     run_job_parser = subparsers.add_parser("run-job")
     run_job_parser.add_argument("--job", required=True)
-    run_job_parser.add_argument("--model", default="gpt-4o-mini")
+    run_job_parser.add_argument("--model", default="gpt-5.4-mini")
     run_job_parser.add_argument("--max-actions", type=int, default=40)
     run_job_parser.add_argument("--base-url")
     run_job_parser.add_argument("--allow-write-source", action="store_true")

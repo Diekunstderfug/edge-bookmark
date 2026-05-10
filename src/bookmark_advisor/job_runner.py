@@ -122,7 +122,7 @@ def reorg_job_from_dict(payload: dict[str, Any]) -> ReorgJob:
 
 def run_reorg_job(
     job_path: Path,
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5.4-mini",
     max_actions: int = 40,
     api_style: str | None = None,
     base_url: str | None = None,

@@ -365,7 +365,7 @@ Command log below:
 
 ```
 13:42 feedback applied       18 actions changed
-13:39 draft generated        model gpt-4.1
+13:39 draft generated        model gpt-5.4-mini
 13:37 snapshot loaded        1,284 bookmarks
 ```
 
@@ -427,7 +427,7 @@ Base URL
 [ https://api.openai.com/v1 ]
 
 Model
-[ gpt-4.1 ]
+[ gpt-5.4-mini ]
 
 API key
 [ stored ·••••••••••••        CHANGE ]

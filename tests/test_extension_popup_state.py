@@ -48,15 +48,40 @@ class ExtensionPopupStateTest(unittest.TestCase):
             this.value = '';
             this.hidden = false;
             this.disabled = false;
-            this.textContent = '';
+            this._textContent = '';
             this.className = '';
+            this.children = [];
+            this.attributes = {{}};
+            this.style = {{}};
             this.listeners = {{}};
-            this.classList = {{ toggle: () => {{}} }};
+            this.classList = {{
+              add: (...names) => names.forEach((name) => this._setClass(name, true)),
+              remove: (...names) => names.forEach((name) => this._setClass(name, false)),
+              contains: (name) => this.className.split(/\\s+/).includes(name),
+              toggle: (name, force) => {{
+                const shouldAdd = force === undefined ? !this.classList.contains(name) : Boolean(force);
+                this._setClass(name, shouldAdd);
+                return shouldAdd;
+              }},
+            }};
+          }}
+          get textContent() {{
+            return [this._textContent, ...this.children.map((child) => child.textContent)].join('');
+          }}
+          set textContent(value) {{ this._textContent = String(value); }}
+          set innerHTML(_value) {{ this.children = []; this._textContent = ''; }}
+          get innerHTML() {{ return this.textContent; }}
+          _setClass(name, shouldAdd) {{
+            const classes = new Set(this.className.split(/\\s+/).filter(Boolean));
+            if (shouldAdd) classes.add(name); else classes.delete(name);
+            this.className = Array.from(classes).join(' ');
           }}
           addEventListener(type, callback) {{ this.listeners[type] = callback; }}
-          setAttribute() {{}}
-          appendChild() {{}}
+          setAttribute(name, value) {{ this.attributes[name] = String(value); }}
+          appendChild(child) {{ this.children.push(child); return child; }}
           click() {{ if (this.listeners.click) this.listeners.click({{ target: this }}); }}
+          focus() {{}}
+          blur() {{ if (this.listeners.blur) this.listeners.blur(); }}
         }}
         function element(id) {{
           if (!elements.has(id)) elements.set(id, new Element(id));
@@ -64,7 +89,7 @@ class ExtensionPopupStateTest(unittest.TestCase):
         }}
         const ids = [
           'plan-file', 'api-key', 'api-base-url', 'api-style', 'endpoint-preview',
-          'key-storage-status', 'model', 'request-timeout', 'max-actions', 'focus-path', 'user-instruction',
+          'key-storage-status', 'model', 'request-timeout', 'max-retries', 'max-actions', 'focus-path', 'user-instruction',
           'status', 'stats', 'total-count', 'executable-count', 'review-count',
           'error-count', 'warning-count', 'preview-list', 'execute-btn',
           'export-snapshot-btn', 'generate-ai-btn', 'revise-ai-btn', 'save-credentials-btn',
@@ -76,7 +101,7 @@ class ExtensionPopupStateTest(unittest.TestCase):
         ids.forEach(element);
         element('api-base-url').value = 'https://api.openai.com/v1';
         element('api-style').value = 'auto';
-        element('model').value = 'gpt-4o-mini';
+        element('model').value = 'gpt-5.4-mini';
         element('max-actions').value = '40';
         element('focus-path').value = '/收藏夹栏/奇妙小工具';
         element('settings-tab').hidden = true;
@@ -89,7 +114,8 @@ class ExtensionPopupStateTest(unittest.TestCase):
           visibilityState: 'visible',
           addEventListener: () => {{}},
           createElement: () => new Element('created'),
-          getElementById: element
+          getElementById: element,
+          querySelectorAll: () => []
         }};
         global.URL = URL;
         global.Blob = function () {{}};
@@ -206,6 +232,45 @@ class ExtensionPopupStateTest(unittest.TestCase):
         self.assertEqual(result["finalClass"], "error")
         self.assertEqual(result["finalCancelHidden"], True)
         self.assertEqual(result["removeCallsDelta"], 0)
+
+    def test_keep_for_review_preview_uses_human_title_not_raw_action_type(self):
+        plan = {
+            "actions": [
+                {
+                    "action_id": "review-1",
+                    "action_type": "keep_for_review",
+                    "status": "pending",
+                    "confidence": 0.25,
+                }
+            ]
+        }
+        script = self._popup_prefix(lang="en", active_job=None) + f"""
+        setTimeout(async () => {{
+          const plan = {json.dumps(plan)};
+          BookmarkPlanLint.parsePlanText = (text) => JSON.parse(text);
+          BookmarkPlanLint.lintPlan = (loadedPlan) => ({{
+            ok: true,
+            errors: [],
+            warnings: [],
+            executableActions: [],
+            reviewActions: loadedPlan.actions,
+            totalActions: loadedPlan.actions.length,
+          }});
+          await element('plan-file').listeners.change({{
+            target: {{ files: [{{ text: async () => JSON.stringify(plan) }}] }}
+          }});
+          console.log(JSON.stringify({{
+            previewText: element('preview-list').textContent,
+            reviewCount: element('review-count').textContent,
+          }}));
+        }}, 0);
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        preview_text = cast(str, result["previewText"])
+        self.assertIn("Needs review", preview_text)
+        self.assertIn("Review item", preview_text)
+        self.assertNotIn("keep_for_review", preview_text)
+        self.assertEqual(result["reviewCount"], "1")
 
     def test_cancel_click_stays_transient_and_failed_job_shows_localized_cancel_message_zh(self):
         script = self._popup_prefix(

@@ -496,14 +496,15 @@ def _request_semantic_plan(
     last_exc: Exception | None = None
 
     for request_style, response_format in attempts:
+        prompt_must_carry_schema = response_format != "json_schema"
         system_text = _system_prompt(
             max_actions=max_actions,
-            require_schema_self_validation=response_format == "json_object",
+            require_schema_self_validation=prompt_must_carry_schema,
         )
         user_text = _user_prompt(
             snapshot_document=snapshot_document,
             rules=rules,
-            include_schema_in_prompt=response_format == "json_object",
+            include_schema_in_prompt=prompt_must_carry_schema,
         )
         try:
             if request_style == "responses":
@@ -549,11 +550,13 @@ def _request_attempts(api_style: str) -> list[tuple[str, str]]:
         return [
             ("chat_completions", "json_schema"),
             ("chat_completions", "json_object"),
+            ("chat_completions", "plain_json"),
         ]
     return [
         ("responses", "json_schema"),
         ("chat_completions", "json_schema"),
         ("chat_completions", "json_object"),
+        ("chat_completions", "plain_json"),
     ]
 
 
@@ -598,14 +601,16 @@ def _request_with_chat_completions(
     user_text: str,
     response_format: str,
 ) -> str:
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": system_text},
             {"role": "user", "content": user_text},
         ],
-        response_format=_chat_completions_format_payload(response_format),
-    )
+    }
+    if response_format != "plain_json":
+        payload["response_format"] = _chat_completions_format_payload(response_format)
+    response = client.chat.completions.create(**payload)
     return _extract_chat_completion_text(response)
 
 

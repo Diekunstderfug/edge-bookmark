@@ -45,6 +45,18 @@ class FakeChatCompletionsAPI:
         return self.response
 
 
+class FakePlainOnlyChatCompletionsAPI:
+    def __init__(self, response: dict):
+        self.response = response
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if "response_format" in kwargs:
+            raise FakeSDKError(400, "response_format is not supported")
+        return self.response
+
+
 class FakeClient:
     def __init__(self, responses_api: FakeResponsesAPI, chat_api: FakeChatCompletionsAPI):
         self.responses = responses_api
@@ -196,6 +208,103 @@ class AIPlannerCompatTest(unittest.TestCase):
             self.assertEqual(plan.actions[0].details["evidence"]["review_method"], "agent_web")
             self.assertEqual(len(fake_client.responses.calls), 1)
             self.assertEqual(len(fake_client.chat.completions.calls), 1)
+
+    def test_plan_with_openai_falls_back_to_plain_chat_when_response_format_unsupported(self):
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            rules = load_rules(write_rules_file(temp_path, protect_root=False))
+            snapshot_document = {
+                "created_at": "2026-04-21T12:00:00",
+                "source_path": "snapshot.json",
+                "folders": [
+                    {
+                        "id": "f-ai",
+                        "name": "AI",
+                        "path": "/收藏夹栏/AI",
+                        "parent_path": "/收藏夹栏",
+                        "root_key": "bookmark_bar",
+                        "depth": 1,
+                        "bookmark_count": 0,
+                        "subfolder_count": 0,
+                    }
+                ],
+                "bookmarks": [
+                    {
+                        "id": "b-1",
+                        "title": "ChatGPT",
+                        "url": "https://chatgpt.com/",
+                        "normalized_url": "https://chatgpt.com/",
+                        "domain": "chatgpt.com",
+                        "folder_id": "root",
+                        "folder_path": "/收藏夹栏",
+                        "top_level_folder": None,
+                        "root_key": "bookmark_bar",
+                        "path": "/收藏夹栏/ChatGPT",
+                        "depth": 0,
+                        "review_status": "reviewed",
+                        "review_method": "agent_web",
+                        "one_line_summary": "General AI assistant product.",
+                        "review_confidence": 0.96,
+                    }
+                ],
+            }
+            draft_payload = {
+                "summary": {"overview": "Move ChatGPT into AI"},
+                "actions": [
+                    {
+                        "action_id": "",
+                        "action_type": "move_bookmark",
+                        "status": "proposed",
+                        "reason": "General AI assistant bookmark",
+                        "confidence": 0.93,
+                        "bookmark_locator": {
+                            "id": "b-1",
+                            "title": "ChatGPT",
+                            "url": "https://chatgpt.com/",
+                            "normalized_url": "https://chatgpt.com/",
+                            "folder_path": "/收藏夹栏",
+                        },
+                        "folder_locator": {"id": "", "name": "", "path": ""},
+                        "from_path": "/收藏夹栏",
+                        "to_path": "/收藏夹栏/AI",
+                        "target_path": "",
+                        "details": {},
+                    }
+                ],
+            }
+            fake_chat = FakePlainOnlyChatCompletionsAPI(
+                response={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(draft_payload, ensure_ascii=False),
+                            }
+                        }
+                    ]
+                }
+            )
+            fake_client = FakeClient(
+                responses_api=FakeResponsesAPI(error=FakeSDKError(404, "responses endpoint not found")),
+                chat_api=fake_chat,
+            )
+
+            with patch("bookmark_advisor.ai_planner._build_openai_client", return_value=fake_client):
+                plan = plan_with_openai(
+                    snapshot_document=snapshot_document,
+                    rules=rules,
+                    model="test-model",
+                    max_actions=8,
+                    api_style="auto",
+                )
+
+            self.assertEqual(plan.summary["api_style_used"], "chat_completions")
+            self.assertEqual(plan.summary["response_format_used"], "plain_json")
+            self.assertEqual(len(fake_chat.calls), 3)
+            self.assertIn("response_format", fake_chat.calls[0])
+            self.assertIn("response_format", fake_chat.calls[1])
+            self.assertNotIn("response_format", fake_chat.calls[2])
+            self.assertIn("Expected JSON schema", fake_chat.calls[2]["messages"][1]["content"])
+            self.assertEqual(plan.actions[0].to_path, "/收藏夹栏/AI")
 
     def test_build_openai_client_raises_clear_error_when_sdk_missing(self):
         with patch("bookmark_advisor.ai_planner._import_openai_sdk", side_effect=ImportError("missing")):

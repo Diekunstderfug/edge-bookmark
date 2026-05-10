@@ -223,7 +223,7 @@ class SemanticFlowTest(unittest.TestCase):
             "created_at": "2026-04-21T10:00:00",
             "source_snapshot": "snapshot.json",
             "rules_source": "rules.yaml",
-            "model": "gpt-4o-mini",
+            "model": "gpt-5.4-mini",
             "summary": {"overview": "test"},
             "actions": [
                 {
