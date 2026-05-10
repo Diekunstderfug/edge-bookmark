@@ -26,8 +26,28 @@
 
   let _currentJobId = null;
   let _abortController = null;
+  let _keepaliveIntervalId = null;
 
   const OFFSCREEN_RESULT_STORAGE = "bookmarkAdvisorOffscreenResult";
+
+  // 每 15s 向 SW 发送 keepalive ping，重置 SW idle timer
+  function startKeepalivePing(jobId) {
+    stopKeepalivePing();
+    _keepaliveIntervalId = setInterval(() => {
+      if (!_currentJobId || _currentJobId !== jobId) {
+        stopKeepalivePing();
+        return;
+      }
+      chrome.runtime.sendMessage({ type: "offscreen-keepalive", jobId }).catch(() => {});
+    }, 15000);
+  }
+
+  function stopKeepalivePing() {
+    if (_keepaliveIntervalId !== null) {
+      clearInterval(_keepaliveIntervalId);
+      _keepaliveIntervalId = null;
+    }
+  }
 
   // 向 Service Worker 发送消息（等待完成，确保大对象序列化不静默失败）
   async function sendToSw(type, jobId, data) {
@@ -79,6 +99,7 @@
     debugLog(`handleGenerate start, jobId=${jobId}`, "log");
     const onProgress = makeProgressCallback(jobId);
     _abortController = new AbortController();
+    startKeepalivePing(jobId);
     try {
       debugLog(`calling generateReviewedPlan...`, "log");
       const result = await globalScope.BookmarkAdvisorAI.generateReviewedPlan({
@@ -104,6 +125,7 @@
       await persistOffscreenResult(jobId, { ok: false, ...errorPayload });
       await sendToSw("offscreen-error", jobId, errorPayload);
     } finally {
+      stopKeepalivePing();
       _currentJobId = null;
       _abortController = null;
       debugLog(`handleGenerate cleanup done`, "log");
@@ -114,6 +136,7 @@
     debugLog(`handleRevise start, jobId=${jobId}`, "log");
     const onProgress = makeProgressCallback(jobId);
     _abortController = new AbortController();
+    startKeepalivePing(jobId);
     try {
       debugLog(`calling reviseReviewedPlan...`, "log");
       const result = await globalScope.BookmarkAdvisorAI.reviseReviewedPlan({
@@ -140,6 +163,7 @@
       await persistOffscreenResult(jobId, { ok: false, ...errorPayload });
       await sendToSw("offscreen-error", jobId, errorPayload);
     } finally {
+      stopKeepalivePing();
       _currentJobId = null;
       _abortController = null;
       debugLog(`handleRevise cleanup done`, "log");
@@ -177,6 +201,7 @@
     }
 
     if (message.type === "offscreen-cancel") {
+      stopKeepalivePing();
       if (_abortController && !_abortController.signal.aborted) {
         _abortController.abort();
       }
