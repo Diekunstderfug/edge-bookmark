@@ -1,63 +1,50 @@
+[简体中文](README.zh-CN.md)
+
 # Bookmark Advisor
 
-AI-first Microsoft Edge bookmark organizer — semantic cleanup with guardrails, undo, and per-action approval.
+AI-first Microsoft Edge bookmark organizer. The normal workflow is the Edge extension: generate a guarded AI plan, review every proposed action, execute through `chrome.bookmarks`, and undo the latest execution if needed. The Python CLI is available for snapshot export, URL review queues, enriched snapshots, and deeper offline checks.
 
-## Feature highlights
+## Use The Extension
 
-- **One-click AI reorganization** — generate a plan from an OpenAI-compatible LLM, review proposed actions, execute inside Edge
-- **Undo last execution** — every mutation records pre-state; reverse the entire batch with one click
-- **Quarantine, not delete** — duplicate bookmarks go to `_Quarantine` instead of being permanently removed
-- **Empty-folder cleanup** — `delete_empty_folder` removes only folders that are still empty at execution time
-- **Background job lifecycle** — long-running AI plans and executions run as cancellable background jobs with heartbeat, stale detection, and offscreen recovery
-- **Focus scope** — restrict AI planning and execution to a single folder tree; policy engine blocks out-of-scope mutations
-- **Per-action approve/revise** — each proposed move, rename, create, delete-empty-folder, or review item has its own approval path
-- **Auto-save form state** — popup drafts survive focus loss; reopen and pick up where you left off
-- **AES-GCM encrypted API key** — key derived from extension install ID, stored in `chrome.storage.local`
-- **CLI path for deep review** — offline URL review sidecars, enriched snapshots, and diffing for high-stakes cleanup
+1. Open `edge://extensions`, enable developer mode, and load the `extension/` directory as an unpacked extension.
+2. Open the extension popup, switch to **LLM**, and set:
+   - **API base URL**: `https://api.openai.com/v1` or another OpenAI-compatible HTTPS endpoint
+   - **Endpoint mode**: `auto` for most providers
+   - **Model**: `gpt-5.4-mini` by default; fast compatible models work best
+   - **API key**: saved as AES-GCM ciphertext in `chrome.storage.local`
+3. Return to **Plan**, optionally pick a focus folder, then click **Generate AI Plan**.
+4. Review actions one by one. Approve good moves, revise specific rows, or leave uncertain items pending.
+5. Click **Execute Reviewed Plan**. Execution happens in Edge via `chrome.bookmarks`, not by editing the bookmarks file.
+6. Use **Undo Last Execution** if the latest batch needs to be reversed.
+7. Click **Generate New Plan for Remaining** to continue with unreviewed items.
 
-## Quick start — Edge extension
+The extension has no build step and no SDK dependency. It uses raw `fetch` against OpenAI-compatible REST APIs and, in `auto` mode, tries `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`.
 
-1. Open `edge://extensions`, enable developer mode
-2. Load unpacked → select the `extension/` directory
-3. Open the extension popup, switch to the **LLM** tab
-4. Set your API base URL (must be HTTPS), model, endpoint mode, and API key
-5. Return to the **Plan** tab, optionally pick a focus folder, and click **Generate AI Plan**
-6. Review each action — approve, revise, or leave as pending
-7. Click **Execute Reviewed Plan**
-8. After execution, undo if needed, or click **Generate New Plan for Remaining** to continue with unreviewed items
+## What Is Safe By Design
 
-The extension uses raw `fetch` against OpenAI-compatible REST APIs (Responses API → Chat Completions → JSON object fallback). Long LLM calls run through an MV3 offscreen document so the service worker can recover persisted results after wakeups. No SDK dependency.
+| Guardrail | Behavior |
+|-----------|----------|
+| Per-action review | Nothing executes until the individual action is approved or otherwise executable |
+| Focus scope | Planning and execution can be restricted to one folder tree |
+| Policy engine | Out-of-scope mutations are blocked at execution time |
+| Undo log | Parent/title pre-state is recorded so the most recent execution can be reversed |
+| Quarantine | Duplicate bookmarks move to `_Quarantine` instead of being permanently deleted |
+| Empty-folder cleanup | `delete_empty_folder` re-checks emptiness before removal; undo recreates the folder |
+| Locator checks | Bookmark/folder IDs are re-read before mutation |
+| Background jobs | Offscreen keepalive pings, `chrome.alarms`, hard cancel, startup recovery, and execution checkpoints |
 
-### Extension safety
+Large folders are split into 50-bookmark prompt parts with concurrency 3, then merged and deduplicated. Ordinary generation currently caps a non-batched request to 12 high-value actions; revision returns only changed rows and preserves unchanged actions locally.
 
-| Feature | What it does |
-|---------|-------------|
-| Undo log | Records parentId + title before each mutation; one-click reversal |
-| Quarantine | `remove_duplicate` moves to `_Quarantine` instead of permanent delete |
-| Empty-folder delete | `delete_empty_folder` re-checks that the target folder has no children before removal; undo recreates the empty folder path |
-| Background jobs | Heartbeat prevents stale detection; hard cancel via AbortController; startup cleanup for interrupted jobs |
-| Policy engine | Blocks actions that would escape the focused folder |
-| Per-action review | Individual approve/revise per action, not per category group; agreed `keep_for_review` rows execute as no-op report entries |
-| Locator verification | Re-checks bookmark/folder IDs exist before every mutation |
-| Mutation lock | Service-worker-level lock prevents concurrent plan executions |
-| Max retries | Configurable LLM lint-failure retry count (default 1, range 0-3) |
+## CLI Tools
 
-### Extension validation layers
-
-1. JSON syntax check on file import
-2. Plan-shape linting (required fields, valid action types, locator data)
-3. Focus-path policy enforcement at execution time
-
-## CLI tools (Python)
-
-The CLI is the stricter path — export snapshots, build URL review queues, generate AI plans with the OpenAI Python SDK, diff results.
+Use the CLI when you need file-based artifacts, URL review sidecars, snapshot diffs, or a stricter offline planning path.
 
 ```bash
-# Everything runs from src/
+# Always set PYTHONPATH because this is a src-layout package.
 PYTHONPATH=src python3 -m bookmark_advisor <command>
 ```
 
-### Snapshot & review
+### Snapshot And Review
 
 ```bash
 # Export current Edge bookmarks
@@ -73,7 +60,7 @@ PYTHONPATH=src python3 -m bookmark_advisor enrich-snapshot \
   --reviews data/reviews/url_review_YYYYMMDD_HHMMSS.json
 ```
 
-### AI planning
+### AI Planning
 
 ```bash
 # Generate a draft plan (OpenAI or compatible provider)
@@ -81,7 +68,7 @@ OPENAI_API_KEY=... OPENAI_BASE_URL=https://your-provider.example/v1 \
 PYTHONPATH=src python3 -m bookmark_advisor plan-ai \
   --snapshot data/snapshots/enriched_snapshot_YYYYMMDD_HHMMSS.json \
   --rules config/rules.yaml \
-  --model gpt-4o-mini
+  --model gpt-5.4-mini
 
 # Finalize draft → reviewed plan
 PYTHONPATH=src python3 -m bookmark_advisor finalize-plan \
@@ -92,7 +79,9 @@ PYTHONPATH=src python3 -m bookmark_advisor diff-snapshot \
   --before data/snapshots/before.json --after data/snapshots/after.json
 ```
 
-### Job runner
+The CLI planner uses the official `openai` Python SDK. Set `OPENAI_BASE_URL` for compatible providers. Auto fallback is `responses/json_schema → chat.completions/json_schema → chat.completions/json_object → chat.completions/plain_json`.
+
+### Job Runner
 
 ```bash
 # Init a reorg job
@@ -104,9 +93,24 @@ PYTHONPATH=src python3 -m bookmark_advisor run-job --job data/jobs/reorg_*/reorg
 
 The job runner steps through export → review-queue → enrich → ai-plan → finalize sequentially, with a file lock and extension waiting phase.
 
-### OpenAI SDK compatibility
+## Common Checks
 
-The CLI planner uses the official `openai` Python SDK. Set `OPENAI_BASE_URL` for compatible providers. Fallback chain: `responses` → `chat.completions` → `json_object`. Use `--api-style` to force a specific mode.
+```bash
+# Full test suite
+PYTHONPATH=src python3 -m pytest tests/
+
+# Python CLI tests only
+PYTHONPATH=src python3 -m unittest discover -s tests
+
+# Focused extension tests
+python -m pytest tests/test_extension_service_worker_state.py \
+  tests/test_extension_plan_lint.py \
+  tests/test_extension_endpoint_urls.py \
+  tests/test_extension_popup_state.py -x -q
+
+# Syntax check a reviewed plan
+python3 -m json.tool data/plans/reviewed_plan.json
+```
 
 ## Architecture
 
@@ -122,19 +126,6 @@ data/               ← Runtime artifacts: snapshots, plans, jobs (gitignored)
 **Data flow**: snapshot → review-queue → url-review → enriched-snapshot → draft-plan → reviewed-plan → execution-report. Every intermediate file is readable JSON — editable and reusable.
 
 **Rules** in `config/rules.yaml` are guardrails, not classifiers: protect roots, force known relocations, constrain risky actions, and keep loose bookmarks under protected roots in place by default.
-
-## Running tests
-
-```bash
-# Python CLI tests
-PYTHONPATH=src python3 -m unittest discover -s tests
-
-# Extension tests (requires node)
-python -m pytest tests/test_extension_service_worker_state.py \
-  tests/test_extension_plan_lint.py \
-  tests/test_extension_endpoint_urls.py \
-  tests/test_extension_popup_state.py -x -q
-```
 
 ## Changelog
 
