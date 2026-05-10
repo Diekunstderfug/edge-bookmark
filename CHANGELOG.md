@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-05-10 — Fast models, cached batching, delta revision, MV3 keepalive
+
+### Extension
+
+- **Fast defaults**: default extension model updated to `gpt-5.4-mini`; model hints now recommend `gpt-5.4-mini`, `deepseek-v4-flash`, and `gemini-2.5-flash`
+- **Cached part batching**: large folders are split into 50-bookmark prompt parts with concurrency 3; returned activations are merged and deduplicated before compile/finalize
+- **Prompt cache alignment**: batched prompts keep shared instructions, rules, and folder catalog before part-specific bookmark rows; official OpenAI calls include `prompt_cache_key`, with 24h retention for supported models
+- **Delta-only revision**: revision prompts return only changed activations; unchanged existing plan rows are preserved locally
+- **MV3 keepalive hardening**: offscreen LLM calls send 15s keepalive pings, service worker jobs use a `chrome.alarms` watchdog, and execution writes per-action checkpoints for partial recovery
+- **Settings persistence**: LLM settings auto-save on blur/pagehide/visibility changes without implicitly saving API keys
+
+### Bug fixes
+
+- **Foreground execution**: `apply-reviewed-plan` runs as a synchronous foreground operation instead of a background job, eliminating stale-state race conditions
+- **Undo log accuracy**: only newly created folders are recorded in the undo log; `delete_empty_folder` records post-mutation state
+- **Empty title guard**: empty-string title fallback no longer matches wrong bookmarks during locate-before-mutate
+- **Focus scope for remove_duplicate**: `remove_duplicate` actions now go through the same focus-path policy check as other action types
+- **Offscreen reliability**: creating-promise guard prevents duplicate document creation; hard timeout includes body read time; LLM stage verifies offscreen is alive before dispatching
+- **Job lifecycle hardening**: active job storage stores only a summary to reduce `chrome.storage` pressure; job state updates spread the persisted `current` object first to prevent partial writes
+- **Path normalization**: `pathWithinScope` uses normalized paths for focus-scope comparisons; `nodeParentPath` and `ensureFolderPath` use the bookmark tree index instead of linear search
+- **Action constants**: `EXECUTION_ORDER`, `EXECUTABLE_ACTIONS`, and `EXECUTABLE_STATUSES` extracted to `action_constants.js` shared module
+- **Unified logging**: `swLog()` replaces direct `console.log` calls in service worker; `nonNegativeInteger` replaces misleading `positiveInteger`
+- **Explicit CSP**: manifest declares `content_security_policy` with script-src restricted to `self`
+- **Cancel cleanup**: `cancelActiveJob` always sends `offscreen-cancel` to the offscreen document; orphan offscreen storage results are cleaned on startup
+
+### Tests
+
+- Full suite verified after the consolidation: `149 passed`
+
 ## 2026-05-06 — Offscreen LLM recovery, review agreement, empty-folder cleanup
 
 ### Extension
