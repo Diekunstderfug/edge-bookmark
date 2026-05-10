@@ -20,6 +20,20 @@ AI-first Microsoft Edge bookmark organizer. The normal workflow is the Edge exte
 
 The extension has no build step and no SDK dependency. It uses raw `fetch` against OpenAI-compatible REST APIs and, in `auto` mode, tries `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`.
 
+## Adjusting Preferences
+
+The **Plan** tab and **LLM** tab expose settings that affect plan generation and execution:
+
+**Plan tab:**
+- **Scope** — restrict planning and execution to a single folder tree. Leave empty to plan across all folders.
+- **Max actions** — cap on how many actions the LLM proposes in one request (1–80, default 40). Lower values finish faster; higher values cover more bookmarks per run.
+
+**LLM tab:**
+- **Endpoint mode** — `auto` tries multiple API formats and picks the one that works. Switch to a specific mode only if `auto` fails for your provider.
+- **Model** — fast models (`gpt-5.4-mini`, `deepseek-v4-flash`, `gemini-2.5-flash`) work best. Reasoning/thinking models are much slower.
+- **Request timeout** — max wait per LLM call in seconds (10–300, default 120). MV3 caps the total at 300s.
+- **Max retries** — how many times to retry after a lint failure (0–3, default 1). Set to 0 for no retries.
+
 ## What Is Safe By Design
 
 | Guardrail | Behavior |
