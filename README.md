@@ -34,6 +34,13 @@ The **Plan** tab and **LLM** tab expose settings that affect plan generation and
 - **Request timeout** — max wait per LLM call in seconds (10–300, default 120). MV3 caps the total at 300s.
 - **Max retries** — how many times to retry after a lint failure (0–3, default 1). Set to 0 for no retries.
 
+**Why aren't root-level bookmarks being moved?**
+
+By default `config/rules.yaml` sets `protect_root_loose_bookmarks: true`. This keeps bookmarks sitting directly under protected roots (`/收藏夹栏`, `/其他收藏夹`, etc.) in place, because moving them without context is risky. To let the AI reorganize them, either:
+
+1. Edit `config/rules.yaml` and set `protect_root_loose_bookmarks: false`, or
+2. Use **Scope** to focus on a specific subfolder — everything inside that folder tree is fair game regardless of this setting.
+
 ## What Is Safe By Design
 
 | Guardrail | Behavior |
