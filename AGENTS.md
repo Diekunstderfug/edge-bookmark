@@ -134,3 +134,8 @@ python3 -m json.tool data/plans/reviewed_plan.json
 - Background jobs use offscreen keepalive pings plus a `chrome.alarms` watchdog; stale threshold is 30 minutes, startup stale threshold is 60 seconds
 - Cooperative cancellation sets `cancellation_requested_at`; hard cancel uses `AbortController` to immediately interrupt the job
 - No CI/CD pipeline — run local syntax checks and `PYTHONPATH=src python3 -m pytest tests/` before shipping
+
+## SEE ALSO
+
+- [README.md](README.md) / [README.zh-CN.md](README.zh-CN.md) — 项目介绍、使用指南、架构概览
+- [CHANGELOG.md](CHANGELOG.md) — 版本变更记录

@@ -77,3 +77,9 @@ Message types (chrome.runtime.sendMessage):
 - **DO NOT** add a JS build step or bundler
 - **DO NOT** use npm packages — extension is intentionally dependency-free
 - **DO NOT** store API keys in plaintext — use AES-GCM via `saveEncryptedSecret()`/`loadEncryptedSecret()`
+
+## SEE ALSO
+
+- [README.md](../README.md) / [README.zh-CN.md](../README.zh-CN.md) — 项目介绍、使用指南
+- [CHANGELOG.md](../CHANGELOG.md) — 版本变更记录
+- [AGENTS.md](../AGENTS.md) — 项目级知识库

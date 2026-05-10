@@ -50,3 +50,9 @@ python -m pytest tests/test_extension_plan_lint.py tests/test_extension_service_
 # Run single file
 PYTHONPATH=src python3 tests/test_rules.py
 ```
+
+## SEE ALSO
+
+- [README.md](../README.md) / [README.zh-CN.md](../README.zh-CN.md) — 项目介绍、使用指南
+- [CHANGELOG.md](../CHANGELOG.md) — 版本变更记录
+- [AGENTS.md](../AGENTS.md) — 项目级知识库

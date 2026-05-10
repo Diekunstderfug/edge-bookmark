@@ -34,7 +34,7 @@ Each phase reads input artifact(s), produces output artifact, advances job state
 - **No pyyaml**: `rules.py` has hand-written YAML parser (`_parse_simple_yaml`). Never add yaml dependency.
 - **Dataclasses only**: All models are `@dataclass` in `models.py`. No Pydantic, no attrs.
 - **File-based data flow**: All intermediate artifacts are JSON files in `data/` (gitignored)
-- **OpenAI fallback chain**: `ai_planner.py` tries responses API → chat.completions JSON schema → json_object mode
+- **OpenAI fallback chain**: `ai_planner.py` tries responses JSON schema → chat.completions JSON schema → chat.completions json_object → chat.completions plain JSON
 - **Semantic action set**: AI/reviewed plans can include `move_bookmark`, `move_folder`, `create_folder`, `rename_folder`, `remove_duplicate`, `delete_empty_folder`, and `keep_for_review`
 - **No external deps except `openai`**: Uses only stdlib otherwise (`json`, `dataclasses`, `argparse`, `urlparse`, `tempfile`)
 
@@ -44,3 +44,9 @@ Each phase reads input artifact(s), produces output artifact, advances job state
 - **DO NOT** use bare `snapshot.json` for AI planning — always go through URL review → enriched snapshot
 - **DO NOT** use `--apply --write-source` as primary workflow — direct file edits get overwritten by Edge sync
 - **DO NOT** auto-move root-level loose bookmarks when `protect_root_loose_bookmarks: true`
+
+## SEE ALSO
+
+- [README.md](../../README.md) / [README.zh-CN.md](../../README.zh-CN.md) — 项目介绍、使用指南
+- [CHANGELOG.md](../../CHANGELOG.md) — 版本变更记录
+- [AGENTS.md](../../AGENTS.md) — 项目级知识库
