@@ -35,8 +35,8 @@ The popup has three tabs. Each controls different aspects of the tool:
 - **Max retries** — how many times to retry after a lint failure (0–3, default 1). Set to 0 for no retries.
 
 **Preferences tab:**
-- **Language** — UI language: Chinese or English (default Chinese).
-- **Root loose bookmark protection** — when **on** (default), bookmarks sitting directly under root folders (`/收藏夹栏`, `/其他收藏夹`, etc.) are left in place. Switch to **off** if you want the AI to move them into subfolders.
+- **Language** — UI language: English or Chinese (default English).
+- **Root loose bookmark protection** — when **on** (default), bookmarks sitting directly under root folders (e.g. Favorites Bar, Other Favorites) are left in place. Switch to **off** if you want the AI to move them into subfolders.
 - **Sort order** — how bookmarks are ordered after reorganization: keep original order (default), sort by title A→Z, or Z→A.
 - **Planning style** — how aggressive the AI is: `balanced` (default, reasonable moves, uncertain items stay for review), `conservative` (only move high-confidence items), or `aggressive` (try to categorize everything, allow new folder creation).
 

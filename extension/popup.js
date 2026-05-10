@@ -30,6 +30,7 @@ const STRINGS = {
     label_api_key: "API key",
     label_request_timeout: "Request timeout (seconds)",
     label_max_retries: "Max retries",
+    hint_model_speed: "Use fast models (gpt-5.4-mini, deepseek-v4-flash, gemini-2.5-flash). Reasoning/thinking models (deepseek-v4-pro, o3) are much slower.",
     label_action_preview: "Action preview",
     label_preferences: "Preferences",
     label_language: "Language",
@@ -100,6 +101,7 @@ const STRINGS = {
     action_dedup: "Dedup",
     action_delete_empty_folder: "Delete empty",
     action_review: "Review",
+    action_review_item: "Review item",
     confidence_high: "High confidence",
     confidence_medium: "Medium confidence",
     confidence_low: "Low confidence",
@@ -137,6 +139,7 @@ const STRINGS = {
     label_api_key: "API \u5bc6\u94a5",
     label_request_timeout: "\u8bf7\u6c42\u8d85\u65f6\uff08\u79d2\uff09",
     label_max_retries: "\u6700\u5927\u91cd\u8bd5\u6b21\u6570",
+    hint_model_speed: "\u63a8\u8350\u5feb\u901f\u6a21\u578b\uff08gpt-5.4-mini\u3001deepseek-v4-flash\u3001gemini-2.5-flash\uff09\u3002\u63a8\u7406/\u601d\u8003\u6a21\u578b\uff08deepseek-v4-pro\u3001o3\uff09\u4f1a\u6162\u5f88\u591a\u3002",
     label_action_preview: "整理预览",
     label_preferences: "\u504f\u597d\u8bbe\u7f6e",
     label_language: "\u8bed\u8a00",
@@ -207,6 +210,7 @@ const STRINGS = {
     action_dedup: "\u53bb\u91cd",
     action_delete_empty_folder: "删除空文件夹",
     action_review: "\u5ba1\u67e5",
+    action_review_item: "待审查项目",
     confidence_high: "\u9ad8\u7f6e\u4fe1\u5ea6",
     confidence_medium: "\u4e2d\u7b49\u7f6e\u4fe1\u5ea6",
     confidence_low: "\u4f4e\u7f6e\u4fe1\u5ea6",
@@ -249,19 +253,20 @@ const JOB_STALENESS_THRESHOLD_MS = 180000;
 const DEFAULT_LLM_SETTINGS = {
   apiBaseUrl: "https://api.openai.com/v1",
   apiStyle: "auto",
-  model: "gpt-4o-mini",
+  model: "gpt-5.4-mini",
   requestTimeout: "180",
 };
 const DEFAULT_PREFERENCES = {
   protectRootLooseBookmarks: "yes",
   sortOrder: "none",
   planningStyle: "balanced",
-  lang: "zh",
+  lang: "en",
 };
 const DEFAULT_UI_DRAFT = {
   activeTab: "plan",
   focusPath: "",
   maxActions: "40",
+  maxRetries: "",
 };
 const REVIEW_CATEGORY_KEY = "__review__";
 
@@ -766,6 +771,7 @@ function attachInputCacheHandlers() {
     requestTimeoutInput,
     focusPathInput,
     maxActionsInput,
+    maxRetriesInput,
     userInstructionInput,
   ];
   for (const field of fields) {
@@ -785,19 +791,39 @@ function attachInputCacheHandlers() {
   window.addEventListener("pagehide", () => {
     stopJobStalenessCheck();
     persistUiDraftSnapshotNow();
+    void autoSaveLlmSettingsIfChanged();
     requestInputCacheWrite();
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       stopJobStalenessCheck();
       persistUiDraftSnapshotNow();
+      void autoSaveLlmSettingsIfChanged();
       requestInputCacheWrite();
     }
   });
   window.addEventListener("blur", () => {
     persistUiDraftSnapshotNow();
+    void autoSaveLlmSettingsIfChanged();
     requestInputCacheWrite();
   });
+}
+
+async function autoSaveLlmSettingsIfChanged() {
+  if (restoringInputs) return;
+  try {
+    const current = readLlmSettingsFromInputs();
+    if (!current.apiBaseUrl && !current.model) return;
+    const saved = await loadLlmSettings();
+    if (current.apiBaseUrl !== saved.apiBaseUrl ||
+        current.apiStyle !== saved.apiStyle ||
+        current.model !== saved.model ||
+        current.requestTimeout !== saved.requestTimeout) {
+      await saveLlmSettings(current);
+    }
+  } catch (_error) {
+    // URL 不合法等异常静默忽略
+  }
 }
 
 function requestInputCacheWrite() {
@@ -846,6 +872,7 @@ function buildUiDraftSnapshot() {
     requestTimeout: requestTimeoutInput.value,
     focusPath: focusPathInput.value,
     maxActions: maxActionsInput.value,
+    maxRetries: maxRetriesInput.value,
     userInstruction: userInstructionInput.value,
     updated_at: new Date().toISOString(),
   };
@@ -1334,6 +1361,9 @@ function buildActionItem(action, isReviewCategory = false) {
 function actionTitle(action) {
   const locator = action.bookmark_locator || {};
   const folderLocator = action.folder_locator || {};
+  if (String(action.action_type || "") === "keep_for_review") {
+    return locator.title || folderLocator.name || String(action.reason || "") || t("action_review_item");
+  }
   return locator.title || folderLocator.name || String(action.action_type || "");
 }
 
@@ -1622,6 +1652,7 @@ async function loadUiDraft() {
     requestTimeout: typeof saved.requestTimeout === "string" ? saved.requestTimeout : DEFAULT_LLM_SETTINGS.requestTimeout,
     focusPath: typeof saved.focusPath === "string" ? saved.focusPath : DEFAULT_UI_DRAFT.focusPath,
     maxActions: typeof saved.maxActions === "string" ? saved.maxActions : DEFAULT_UI_DRAFT.maxActions,
+    maxRetries: typeof saved.maxRetries === "string" ? saved.maxRetries : DEFAULT_UI_DRAFT.maxRetries,
     userInstruction: typeof saved.userInstruction === "string" ? saved.userInstruction : "",
   };
 }
@@ -1639,6 +1670,7 @@ function applyUiDraft(draft) {
   requestTimeoutInput.value = draft.requestTimeout || DEFAULT_LLM_SETTINGS.requestTimeout;
   _pendingFocusPath = draft.focusPath || DEFAULT_UI_DRAFT.focusPath;
   maxActionsInput.value = draft.maxActions || DEFAULT_UI_DRAFT.maxActions;
+  maxRetriesInput.value = draft.maxRetries ?? DEFAULT_UI_DRAFT.maxRetries;
   if (draft.userInstruction) {
     userInstructionInput.value = draft.userInstruction;
   }
