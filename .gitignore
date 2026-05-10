@@ -1,6 +1,11 @@
 # Local bookmark exports, backups, plans, reports, and job artifacts.
 data/
 
+# Local agent/tool state.
+.sisyphus/
+.omx/
+.claude/
+
 # Personal exports, backups, browser dumps, and local datasets.
 *.bak
 *.backup
