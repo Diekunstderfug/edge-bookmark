@@ -7,6 +7,9 @@ importScripts("action_constants.js");
 const OFFSCREEN_DOCUMENT_URL = chrome.runtime.getURL("offscreen.html");
 const OFFSCREEN_RESULT_STORAGE_NAME = "bookmarkAdvisorOffscreenResult";
 
+const JOB_KEEPALIVE_ALARM = "bookmarkAdvisorJobKeepalive";
+const EXECUTION_CHECKPOINT_STORAGE = "bookmarkAdvisorExecCheckpoint";
+
 const ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
 const STARTUP_JOB_STALE_MS = 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 180000;
@@ -21,7 +24,6 @@ const UNDO_RENAME = "rename";
 const UNDO_DELETE_FOLDER = "delete_folder";
 const UNDO_CREATE_FOLDER = "create_folder";
 let runningJobId = "";
-let _jobHeartbeatIntervalId = null;
 let _jobAbortController = null;
 let _startupCleanupStarted = false;
 let _creatingOffscreenPromise = null;
@@ -132,6 +134,7 @@ if (typeof process !== "undefined" && typeof globalThis !== "undefined") {
 function createAbortError(message) {
   const error = new Error(message || "The operation was aborted.");
   error.name = "AbortError";
+  error.code = 20;
   return error;
 }
 
@@ -142,7 +145,7 @@ function swLog(...args) {
   }
 }
 
-function positiveInteger(value, fallback) {
+function nonNegativeInteger(value, fallback) {
   const numberValue = Number(value);
   if (!Number.isFinite(numberValue) || numberValue < 0) {
     return fallback;
@@ -177,12 +180,12 @@ function requestAttemptCountForOptions(options) {
 function offscreenHardTimeoutMs(mode, payload) {
   const options = llmOptionsFromPayload(mode, payload);
   const requestTimeoutMs = clampNumber(
-    positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS),
+    nonNegativeInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS),
     1,
     MAX_EXTENSION_FETCH_TIMEOUT_MS,
   );
   const lintRetries = clampNumber(
-    positiveInteger(options.maxRetries, DEFAULT_MAX_RETRIES),
+    nonNegativeInteger(options.maxRetries, DEFAULT_MAX_RETRIES),
     0,
     MAX_LINT_RETRIES,
   );
@@ -330,6 +333,23 @@ async function cleanupStaleActiveJobOnStartup() {
   }
   _startupCleanupStarted = true;
   try {
+    // 先恢复执行阶段的 checkpoint（SW 可能在执行中途被杀）
+    const checkpoint = await chromeStorageGet(EXECUTION_CHECKPOINT_STORAGE);
+    if (checkpoint && checkpoint.executionId && checkpoint.done > 0) {
+      const partialReport = {
+        plan_version: "2",
+        plan_kind: "reviewed",
+        executed_at: checkpoint.succeeded[0]?.executed_at || new Date().toISOString(),
+        succeeded: checkpoint.succeeded || [],
+        failures: checkpoint.failures || [],
+        partial: true,
+        partial_reason: "Service worker interrupted during execution.",
+      };
+      await saveLastReport(partialReport);
+      await clearExecutionCheckpoint();
+      swLog(`[BookmarkAdvisor][SW] recovered execution checkpoint: ${checkpoint.done}/${checkpoint.totalActions} actions`);
+    }
+
     // 先检查是否有 offscreen 已完成的暂存结果（SW 终止期间 offscreen 独立完成）
     const recovered = await recoverPersistedOffscreenResult("Restored from offscreen after SW restart.");
     if (recovered) {
@@ -474,6 +494,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "offscreen-ready") {
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.type === "offscreen-keepalive") {
     sendResponse({ ok: true });
     return true;
   }
@@ -997,23 +1022,17 @@ function saveActiveJob(job) {
   return chromeStorageSet(globalThis.ACTIVE_JOB_STORAGE_NAME, job);
 }
 
-function startJobHeartbeat(job, intervalMs = 15000) {
+function startJobHeartbeat(job) {
   stopJobHeartbeat();
   if (!job || !job.id) {
     return;
   }
-  _jobHeartbeatIntervalId = setInterval(() => {
-    void jobHeartbeatTick(job).catch(() => {
-      stopJobHeartbeat();
-    });
-  }, intervalMs);
+  // chrome.alarms 最小间隔 0.5 分钟（30s），SW 死后 alarm 仍能唤醒
+  void chrome.alarms.create(JOB_KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
 }
 
 function stopJobHeartbeat() {
-  if (_jobHeartbeatIntervalId !== null) {
-    clearInterval(_jobHeartbeatIntervalId);
-    _jobHeartbeatIntervalId = null;
-  }
+  void chrome.alarms.clear(JOB_KEEPALIVE_ALARM);
 }
 
 async function jobHeartbeatTick(job) {
@@ -1027,6 +1046,21 @@ async function jobHeartbeatTick(job) {
     updated_at: new Date().toISOString(),
   });
 }
+
+// chrome.alarms 回调：心跳 tick + SW 重启后恢复检测
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== JOB_KEEPALIVE_ALARM) {
+    return;
+  }
+  void (async () => {
+    const current = await chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME);
+    if (!current || current.status !== "running") {
+      stopJobHeartbeat();
+      return;
+    }
+    await jobHeartbeatTick(current);
+  })().catch(() => {});
+});
 
 function jobProgress(job, message) {
   return chromeStorageGet(globalThis.ACTIVE_JOB_STORAGE_NAME).then((current) => {
@@ -1046,7 +1080,13 @@ function jobProgress(job, message) {
   });
 }
 
+async function saveExecutionCheckpoint(checkpoint) {
+  await chromeStorageSet(EXECUTION_CHECKPOINT_STORAGE, checkpoint);
+}
 
+async function clearExecutionCheckpoint() {
+  await chromeStorageSet(EXECUTION_CHECKPOINT_STORAGE, null);
+}
 
 async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress, jobContext = null) {
   validateExecutablePlan(plan);
@@ -1070,6 +1110,7 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress,
     (sum, actionType) => sum + grouped.get(actionType).length, 0,
   );
 
+  await saveExecutionCheckpoint({ executionId, totalActions, done: 0, succeeded: [], failures: [] });
   await assertJobNotCancelled(jobContext);
   await onProgress("Starting plan execution...");
   const bookmarkTree = await bookmarkCall("getTree");
@@ -1101,7 +1142,9 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress,
           break;
         }
       }
-      await onProgress(`Executing action ${succeeded.length + failures.length}/${totalActions}...`);
+      const done = succeeded.length + failures.length;
+      await saveExecutionCheckpoint({ executionId, totalActions, done, succeeded, failures });
+      await onProgress(`Executing action ${done}/${totalActions}...`);
       await assertJobNotCancelled(jobContext);
     }
     if (stoppedOnFailure) break;
@@ -1115,6 +1158,7 @@ async function executeReviewedPlan(plan, focusPath, onProgress = reportProgress,
     failures,
   };
   await saveLastReport(report);
+  await clearExecutionCheckpoint();
   await onProgress("Execution report saved for popup restore.");
   return report;
 }

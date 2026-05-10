@@ -25,6 +25,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
     def _node_eval(self, expression: str) -> object:
         script = (
             f"require({json.dumps(str(_REPO_ROOT / 'extension' / 'action_constants.js'))});\n"
+            f"require({json.dumps(str(_REPO_ROOT / 'extension' / 'storage_helpers.js'))});\n"
             f"require({json.dumps(str(_AI_PLANNER))});\n"
             f"const result = {expression};\n"
             "console.log(JSON.stringify(result));\n"
@@ -42,6 +43,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
     def _node_script(self, body: str) -> object:
         script = (
             f"require({json.dumps(str(_REPO_ROOT / 'extension' / 'action_constants.js'))});\n"
+            f"require({json.dumps(str(_REPO_ROOT / 'extension' / 'storage_helpers.js'))});\n"
             f"require({json.dumps(str(_AI_PLANNER))});\n{body}\n"
         )
         completed = subprocess.run(
@@ -450,7 +452,7 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
             "toPath": "/收藏夹栏/AI",
         })
 
-    def test_generate_plan_stops_after_three_activation_lint_failures(self):
+    def test_generate_plan_drops_unknown_references_after_retries(self):
         body = """
         const calls = [];
         const invalidPayload = {
@@ -489,21 +491,21 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
               folder_path: '/收藏夹栏/Loose'
             }]
           }
-        }).then(() => {
-          console.error('expected lint failure');
-          process.exit(1);
-        }).catch((error) => {
+        }).then((result) => {
           console.log(JSON.stringify({
             callCount: calls.length,
             feedbackIncludedOnLastTry: calls[2].includes('Validation errors'),
-            message: error.message
+            actionCount: result.reviewed_plan.actions.length
           }));
+        }).catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
         });
         """
         result = cast(dict[str, object], self._node_script(body))
         self.assertEqual(result["callCount"], 3)
         self.assertEqual(result["feedbackIncludedOnLastTry"], True)
-        self.assertIn("failed after 3 attempt", cast(str, result["message"]))
+        self.assertEqual(result["actionCount"], 0)
 
     def test_focus_snapshot_does_not_include_prefix_sibling_folder_bookmarks(self):
         body = """

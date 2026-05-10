@@ -1,11 +1,14 @@
-/* global EXECUTABLE_ACTIONS, EXECUTION_ORDER, EXECUTABLE_STATUSES */
+/* global EXECUTABLE_ACTIONS, EXECUTION_ORDER, EXECUTABLE_STATUSES, normalizePath, pathWithinScope */
 
 (function attachBookmarkAdvisorAI(globalScope) {
   const DEFAULT_API_BASE_URL = "https://api.openai.com/v1";
-  const DEFAULT_MODEL = "gpt-4o-mini";
+  const DEFAULT_MODEL = "gpt-5.4-mini";
   const DEFAULT_API_STYLE = "auto";
   const DEFAULT_MAX_ACTIONS = 40;
   const DEFAULT_APPROVE_THRESHOLD = 0.85;
+  const BATCH_PLANNING_BOOKMARK_THRESHOLD = 50;
+  const BATCH_PLANNING_SIZE = 50;
+  const BATCH_PLANNING_CONCURRENCY = 3;
   const MAX_EXTENSION_FETCH_TIMEOUT_MS = 300000;
   const DEFAULT_REQUEST_TIMEOUT_MS = 180000;
   const DEFAULT_MAX_RETRIES = 1;
@@ -90,7 +93,7 @@
     const apiBaseUrl = normalizeApiBaseUrl(options.apiBaseUrl || options.baseUrl || DEFAULT_API_BASE_URL);
     const apiStyle = normalizeApiStyle(options.apiStyle || DEFAULT_API_STYLE);
     const model = String(options.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-    const maxActions = positiveInteger(options.maxActions, DEFAULT_MAX_ACTIONS);
+    const maxActions = Math.min(nonNegativeInteger(options.maxActions, DEFAULT_MAX_ACTIONS), 12);
     const autoApproveThreshold = finiteNumber(
       options.autoApproveThreshold,
       DEFAULT_APPROVE_THRESHOLD,
@@ -103,7 +106,7 @@
     const signal = options.signal;
     const planningSnapshot = buildPlanningSnapshot(snapshot, focusPath);
     const preferences = options.preferences || {};
-    const activationPayload = await requestDraftPlan({
+    const activationPayload = await requestDraftPlanMaybeBatched({
       apiKey,
       apiBaseUrl,
       apiStyle,
@@ -178,7 +181,7 @@
     const apiBaseUrl = normalizeApiBaseUrl(options.apiBaseUrl || options.baseUrl || DEFAULT_API_BASE_URL);
     const apiStyle = normalizeApiStyle(options.apiStyle || DEFAULT_API_STYLE);
     const model = String(options.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-    const maxActions = positiveInteger(options.maxActions, DEFAULT_MAX_ACTIONS);
+    const maxActions = nonNegativeInteger(options.maxActions, DEFAULT_MAX_ACTIONS);
     const autoApproveThreshold = finiteNumber(
       options.autoApproveThreshold,
       DEFAULT_APPROVE_THRESHOLD,
@@ -212,12 +215,13 @@
     // eslint-disable-next-line no-console
     console.log(`[BookmarkAdvisor][offscreen] requestRevisionPlan returned, activations=${(activationPayload.activations || []).length}`);
 
-    await onProgress("Compiling activations...");
+    await onProgress("Compiling revision changes...");
     let draft;
     try {
       const t0 = performance.now();
-      draft = compileActivationPlan(activationPayload, planningSnapshot);
-      debugLog(`compileActivationPlan done, actions=${draft.actions.length}, ` + Math.round(performance.now() - t0) + "ms", "log");
+      const deltaDraft = compileActivationPlan(activationPayload, planningSnapshot);
+      draft = mergeRevisionDraft(options.existingPlan, deltaDraft);
+      debugLog(`mergeRevisionDraft done, changed=${deltaDraft.actions.length}, total=${draft.actions.length}, ` + Math.round(performance.now() - t0) + "ms", "log");
     } catch (err) {
       debugLog(`compileActivationPlan FAILED: ` + err, "error");
       throw err;
@@ -256,9 +260,34 @@
     };
   }
 
-  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, focusPath, userInstruction, preferences, onProgress, signal }) {
+  async function requestDraftPlanMaybeBatched(options) {
+    const parts = splitPlanningSnapshot(options.snapshot, BATCH_PLANNING_BOOKMARK_THRESHOLD, BATCH_PLANNING_SIZE);
+    if (parts.length <= 1) {
+      return requestDraftPlan(options);
+    }
+    await options.onProgress(`Large folder detected: ${options.snapshot.bookmarks.length} bookmarks, split into ${parts.length} cached prompt parts.`);
+    const payloads = await mapWithConcurrency(parts, BATCH_PLANNING_CONCURRENCY, async (part, index) => {
+      const partNumber = index + 1;
+      await options.onProgress(`Planning part ${partNumber}/${parts.length} (${part.bookmarks.length} bookmarks)...`);
+      return requestDraftPlan({
+        ...options,
+        maxActions: BATCH_PLANNING_SIZE,
+        snapshot: part,
+        batchInfo: {
+          partNumber,
+          totalParts: parts.length,
+          partBookmarkCount: part.bookmarks.length,
+        },
+      });
+    });
+    const merged = mergeActivationPayloads(payloads);
+    await options.onProgress(`Merged ${merged.activations.length} deduplicated activations from ${parts.length} parts.`);
+    return merged;
+  }
+
+  async function requestDraftPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, focusPath, userInstruction, preferences, onProgress, signal, batchInfo }) {
     const systemText = buildSystemPrompt(maxActions, preferences);
-    const userText = buildUserPrompt(snapshot, focusPath, userInstruction, preferences);
+    const userText = buildUserPrompt(snapshot, focusPath, userInstruction, preferences, batchInfo);
     const totalChars = systemText.length + userText.length;
     const approxTokens = Math.round(totalChars / 4);
     await onProgress(`Prompt size: ~${approxTokens} tokens (${totalChars} chars)`);
@@ -282,7 +311,7 @@
 
   async function requestRevisionPlan({ apiKey, apiBaseUrl, apiStyle, model, maxActions, requestTimeoutMs, maxRetries, snapshot, existingPlan, userInstruction, preferences, onProgress, signal }) {
     const systemText = buildSystemPrompt(maxActions, preferences);
-    const userText = buildRevisionUserPrompt(existingPlan, snapshot, userInstruction, preferences);
+    const userText = buildRevisionUserPrompt(existingPlan, snapshot, userInstruction, preferences, maxActions);
     const totalChars = systemText.length + userText.length;
     const approxTokens = Math.round(totalChars / 4);
     await onProgress(`Prompt size: ~${approxTokens} tokens (${totalChars} chars)`);
@@ -334,6 +363,14 @@
             await onProgress("Lint passed.");
             return activationPayload;
           }
+          if (lintAttempt === maxAttempts && lintErrorsAreOnlyReferenceErrors(lintErrors)) {
+            const prunedPayload = pruneInvalidActivationReferences(activationPayload, snapshot);
+            const prunedLintErrors = lintActivationPayload(prunedPayload.payload, snapshot);
+            if (prunedPayload.dropped > 0 && prunedLintErrors.length === 0) {
+              await onProgress(`Dropped ${prunedPayload.dropped} activation(s) with unknown bookmark/folder ids after retry.`);
+              return prunedPayload.payload;
+            }
+          }
           errors.push(`activation lint pass ${lintAttempt}: ${lintErrors.join("; ")}`);
           retryFeedback = buildActivationRetryFeedback(lintErrors);
           await onProgress(`Lint failed (${lintErrors.length} issue(s)). Retrying...`);
@@ -362,6 +399,7 @@
       "",
       "Your previous activation JSON failed local validation.",
       "Return corrected JSON only, using the same activation schema.",
+      "Use exact node_id values copied from the B/F rows in the prompt. Do not use URLs, titles, domains, indexes, or invented ids.",
       "Validation errors:",
       ...lintErrors.slice(0, 20).map((error) => `- ${error}`),
     ].join("\n");
@@ -385,7 +423,7 @@
 
   async function requestCompatibleAttempt({ attempt, apiBaseUrl, apiKey, model, requestTimeoutMs, schema, systemText, userText, signal, onProgress }) {
     if (attempt === "responses_json_schema") {
-      return postCompatible(endpointUrl(apiBaseUrl, "responses"), apiKey, requestTimeoutMs, {
+      const payload = withOpenAiPromptCacheFields(apiBaseUrl, model, {
         model,
         input: [
           {
@@ -405,7 +443,8 @@
             schema,
           },
         },
-      }, signal, onProgress);
+      });
+      return postCompatible(endpointUrl(apiBaseUrl, "responses"), apiKey, requestTimeoutMs, payload, signal, onProgress);
     }
 
     if (attempt === "completions_plain_json") {
@@ -433,7 +472,31 @@
     } else if (attempt === "chat_json_object") {
       chatPayload.response_format = { type: "json_object" };
     }
-    return postCompatible(endpointUrl(apiBaseUrl, "chat/completions"), apiKey, requestTimeoutMs, chatPayload, signal, onProgress);
+    return postCompatible(endpointUrl(apiBaseUrl, "chat/completions"), apiKey, requestTimeoutMs, withOpenAiPromptCacheFields(apiBaseUrl, model, chatPayload), signal, onProgress);
+  }
+
+  function withOpenAiPromptCacheFields(apiBaseUrl, model, payload) {
+    if (!isOfficialOpenAiApi(apiBaseUrl)) {
+      return payload;
+    }
+    const next = { ...payload, prompt_cache_key: "edge-bookmark-planner-v1" };
+    if (supportsOpenAiExtendedPromptCache(model)) {
+      next.prompt_cache_retention = "24h";
+    }
+    return next;
+  }
+
+  function isOfficialOpenAiApi(apiBaseUrl) {
+    try {
+      return new URL(normalizeApiBaseUrl(apiBaseUrl)).hostname === "api.openai.com";
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function supportsOpenAiExtendedPromptCache(model) {
+    const name = String(model || "").toLowerCase();
+    return name.startsWith("gpt-5.5") || name.startsWith("gpt-5.4") || name.startsWith("gpt-5.2") || name.startsWith("gpt-5.1") || name.startsWith("gpt-5") || name.startsWith("gpt-4.1");
   }
 
   function buildRequestAttempts(apiStyle, apiBaseUrl) {
@@ -456,8 +519,8 @@
     if (apiStyle === "completions") {
       return ["completions_plain_json"];
     }
-    // auto: 兼容性优先，先尝试最基础的 plain JSON，再逐步升级到结构化格式
-    return ["chat_plain_json", "chat_json_object", "chat_json_schema", "completions_plain_json", "responses_json_schema"];
+    // auto: 先尝试 chat JSON 约束；不支持 response_format 的兼容端点再退回 plain chat
+    return ["chat_json_object", "chat_json_schema", "chat_plain_json", "completions_plain_json", "responses_json_schema"];
   }
 
   function buildChatMessages(systemText, userText, _schema, attempt) {
@@ -509,9 +572,9 @@
     if (typeof onProgress === "function") {
       let elapsed = 0;
       fetchKeepAliveId = setInterval(() => {
-        elapsed += 8;
+        elapsed += 1;
         void onProgress(`Waiting for LLM response... (${elapsed}s)`);
-      }, 8000);
+      }, 1000);
     }
 
     let response;
@@ -545,9 +608,9 @@
     if (typeof onProgress === "function") {
       let elapsed = 0;
       textKeepAliveId = setInterval(() => {
-        elapsed += 8;
+        elapsed += 1;
         void onProgress(`Reading LLM response body... (${elapsed}s)`);
-      }, 8000);
+      }, 1000);
     }
 
     let text;
@@ -610,7 +673,7 @@
     const folders = (snapshot.folders || []).map(normalizeFolder);
     const bookmarks = (snapshot.bookmarks || [])
       .map(normalizeBookmark)
-      .filter((bookmark) => !focusPath || pathInFocusScope(bookmark.folder_path, focusPath))
+      .filter((bookmark) => !focusPath || pathWithinScope(bookmark.folder_path, focusPath))
       .map((bookmark) => ({
         ...bookmark,
         review_status: urlRequiresReview(bookmark.url) ? "fast_reviewed" : "skipped_internal",
@@ -630,9 +693,100 @@
       source_path: snapshot.source_path || "edge-bookmarks-api",
       created_at: snapshot.created_at || new Date().toISOString(),
       focus_path: focusPath,
-      folders: folders.filter((folder) => !focusPath || pathInFocusScope(folder.path, focusPath) || focusPath.startsWith(`${folder.path}/`)),
+      folders: folders.filter((folder) => !focusPath || pathWithinScope(folder.path, focusPath) || focusPath.startsWith(`${folder.path}/`)),
       bookmarks,
     };
+  }
+
+  function splitPlanningSnapshot(snapshot, threshold, size) {
+    const bookmarks = snapshot.bookmarks || [];
+    if (bookmarks.length <= threshold) {
+      return [snapshot];
+    }
+    const parts = [];
+    for (let index = 0; index < bookmarks.length; index += size) {
+      parts.push({
+        ...snapshot,
+        bookmarks: bookmarks.slice(index, index + size),
+      });
+    }
+    return parts;
+  }
+
+  async function mapWithConcurrency(items, concurrency, mapper) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+    const workers = new Array(Math.min(concurrency, items.length)).fill(null).map(async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await mapper(items[index], index);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
+
+  function mergeActivationPayloads(payloads) {
+    const summaryParts = [];
+    const activationByKey = new Map();
+    const nodeScopedKeyByNode = new Map();
+
+    for (const payload of payloads || []) {
+      const overview = payload && payload.summary ? payload.summary.overview : "";
+      if (overview) {
+        summaryParts.push(String(overview));
+      }
+      for (const activation of (payload && payload.activations) || []) {
+        const key = activationDedupeKey(activation);
+        const existing = activationByKey.get(key);
+        if (existing && !activationShouldReplace(existing, activation)) {
+          continue;
+        }
+        if (isBookmarkScopedActivation(activation)) {
+          const nodeKey = String(activation.node_id || "");
+          const previousKey = nodeScopedKeyByNode.get(nodeKey);
+          const previous = previousKey ? activationByKey.get(previousKey) : null;
+          if (previous && previousKey !== key && !activationShouldReplace(previous, activation)) {
+            continue;
+          }
+          if (previousKey && previousKey !== key) {
+            activationByKey.delete(previousKey);
+          }
+          nodeScopedKeyByNode.set(nodeKey, key);
+        }
+        activationByKey.set(key, activation);
+      }
+    }
+
+    return {
+      summary: {
+        overview: summaryParts.length ? summaryParts.join("; ") : "Generated in cached parts.",
+      },
+      activations: Array.from(activationByKey.values()),
+    };
+  }
+
+  function activationDedupeKey(activation) {
+    return [
+      String(activation.op || ""),
+      String(activation.node_id || ""),
+      String(activation.target || ""),
+      String(activation.duplicate_of_id || ""),
+    ].join("::");
+  }
+
+  function isBookmarkScopedActivation(activation) {
+    return ["move_bookmark", "remove_duplicate", "keep_for_review"].includes(String(activation.op || "")) && !!activation.node_id;
+  }
+
+  function activationShouldReplace(existing, candidate) {
+    const existingConfidence = finiteNumber(existing.confidence, 0);
+    const candidateConfidence = finiteNumber(candidate.confidence, 0);
+    if (candidateConfidence !== existingConfidence) {
+      return candidateConfidence > existingConfidence;
+    }
+    return existing.op === "keep_for_review" && candidate.op !== "keep_for_review";
   }
 
   function finalizeDraftPlan({ draft, snapshot, model, autoApproveThreshold }) {
@@ -727,6 +881,43 @@
     };
   }
 
+  function mergeRevisionDraft(existingPlan, deltaDraft) {
+    const retained = [];
+    const replacementKeys = new Set((deltaDraft.actions || []).map(revisionActionScopeKey).filter(Boolean));
+    for (const action of existingPlan.actions || []) {
+      const normalized = normalizeAction(action);
+      const key = revisionActionScopeKey(normalized);
+      if (key && replacementKeys.has(key)) {
+        continue;
+      }
+      retained.push(normalized);
+    }
+    return {
+      summary: {
+        ...(existingPlan.summary || {}),
+        ...(deltaDraft.summary || {}),
+      },
+      actions: retained.concat(deltaDraft.actions || []),
+    };
+  }
+
+  function revisionActionScopeKey(action) {
+    const type = String(action.action_type || "");
+    if (["move_bookmark", "remove_duplicate", "keep_for_review"].includes(type)) {
+      const id = action.bookmark_locator && action.bookmark_locator.id;
+      return id ? `bookmark:${id}` : "";
+    }
+    if (["move_folder", "rename_folder", "delete_empty_folder"].includes(type)) {
+      const folder = action.folder_locator || {};
+      const idOrPath = folder.id || folder.path;
+      return idOrPath ? `folder:${idOrPath}` : "";
+    }
+    if (type === "create_folder") {
+      return action.target_path ? `create_folder:${action.target_path}` : "";
+    }
+    return "";
+  }
+
   function lintActivationPayload(activationPayload, snapshot) {
     const errors = [];
     if (!activationPayload || typeof activationPayload !== "object") {
@@ -763,16 +954,16 @@
         }
       } else if (op === "create_folder") {
         if (!isAbsolutePath(target)) errors.push(`${path}.target must be an absolute folder path.`);
-        if (!pathInFocusScope(target, focusPath)) errors.push(`${path}.target must stay within the focused folder.`);
+        if (!pathWithinScope(target, focusPath)) errors.push(`${path}.target must stay within the focused folder.`);
       } else if (op === "move_bookmark") {
         const bookmark = bookmarkIndex.get(nodeId);
         if (!bookmark) errors.push(`${path}.node_id must reference an existing bookmark id.`);
-        if (bookmark && !pathInFocusScope(bookmark.folder_path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
+        if (bookmark && !pathWithinScope(bookmark.folder_path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
         if (!isAbsolutePath(target)) errors.push(`${path}.target must be an absolute folder path.`);
       } else if (op === "move_folder") {
         const folder = folderIndex.get(nodeId);
         if (!folder) errors.push(`${path}.node_id must reference an existing folder id.`);
-        if (folder && !pathInFocusScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
+        if (folder && !pathWithinScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
         if (!isAbsolutePath(target)) errors.push(`${path}.target must be an absolute folder path.`);
         if (folder && (target === folder.path || target.startsWith(`${folder.path}/`))) {
           errors.push(`${path}.target must not be the same folder or its descendant.`);
@@ -780,22 +971,75 @@
       } else if (op === "rename_folder") {
         const folder = folderIndex.get(nodeId);
         if (!folder) errors.push(`${path}.node_id must reference an existing folder id.`);
-        if (folder && !pathInFocusScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
+        if (folder && !pathWithinScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
       } else if (op === "remove_duplicate") {
         const bookmark = bookmarkIndex.get(nodeId);
         const duplicateOf = bookmarkIndex.get(String(activation.duplicate_of_id || ""));
         if (!bookmark) errors.push(`${path}.node_id must reference an existing bookmark id.`);
-        if (bookmark && !pathInFocusScope(bookmark.folder_path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
+        if (bookmark && !pathWithinScope(bookmark.folder_path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
         if (!duplicateOf) errors.push(`${path}.duplicate_of_id must reference an existing bookmark id.`);
         // duplicate URL 不匹配不阻断，由 compile 阶段转为 keep_for_review
       } else if (op === "delete_empty_folder") {
         const folder = folderIndex.get(nodeId);
         if (!folder) errors.push(`${path}.node_id must reference an existing folder id.`);
-        if (folder && !pathInFocusScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
+        if (folder && !pathWithinScope(folder.path, focusPath)) errors.push(`${path}.node_id must stay within the focused folder.`);
       }
     });
 
     return errors;
+  }
+
+  function pruneInvalidActivationReferences(activationPayload, snapshot) {
+    if (!activationPayload || !Array.isArray(activationPayload.activations)) {
+      return { payload: activationPayload, dropped: 0 };
+    }
+    const bookmarkIds = new Set((snapshot.bookmarks || []).map((bookmark) => String(bookmark.id || "")));
+    const folderIds = new Set((snapshot.folders || []).map((folder) => String(folder.id || "")));
+    const kept = [];
+    let dropped = 0;
+    for (const activation of activationPayload.activations) {
+      if (!activation || typeof activation !== "object") {
+        kept.push(activation);
+        continue;
+      }
+      if (activationHasUnknownReferences(activation, bookmarkIds, folderIds)) {
+        dropped += 1;
+        continue;
+      }
+      kept.push(activation);
+    }
+    return {
+      payload: {
+        ...activationPayload,
+        activations: kept,
+      },
+      dropped,
+    };
+  }
+
+  function lintErrorsAreOnlyReferenceErrors(lintErrors) {
+    return lintErrors.length > 0 && lintErrors.every((error) => String(error || "").includes("must reference an existing"));
+  }
+
+  function activationHasUnknownReferences(activation, bookmarkIds, folderIds) {
+    const op = String(activation.op || "");
+    const nodeId = String(activation.node_id || "");
+    if (op === "move_bookmark" || op === "remove_duplicate") {
+      if (!bookmarkIds.has(nodeId)) {
+        return true;
+      }
+      if (op === "remove_duplicate" && !bookmarkIds.has(String(activation.duplicate_of_id || ""))) {
+        return true;
+      }
+      return false;
+    }
+    if (op === "move_folder" || op === "rename_folder" || op === "delete_empty_folder") {
+      return !folderIds.has(nodeId);
+    }
+    if (op === "keep_for_review") {
+      return !!nodeId && !bookmarkIds.has(nodeId) && !folderIds.has(nodeId);
+    }
+    return false;
   }
 
   function compileActivation(activation, bookmarkIndex, folderIndex) {
@@ -931,31 +1175,6 @@
     return typeof path === "string" && path.startsWith("/") && path.length > 1;
   }
 
-  function normalizePath(path) {
-    if (!path || typeof path !== 'string') return '/';
-
-    let normalized = path.trim();
-
-    if (!normalized.startsWith('/')) {
-      normalized = '/' + normalized;
-    }
-
-    normalized = normalized.replace(/\/+$/, '');
-
-    normalized = normalized.replace(/\/+/g, '/');
-
-    if (normalized === '') normalized = '/';
-
-    return normalized;
-  }
-
-  function pathInFocusScope(path, focusPath) {
-    if (!focusPath) return true;
-    const normPath = normalizePath(path);
-    const normFocus = normalizePath(focusPath);
-    return normPath === normFocus || normPath.startsWith(normFocus + "/");
-  }
-
   function applyActionGuardrails(action, bookmarkIndex) {
     if (action.action_type !== "move_bookmark") {
       return action;
@@ -1006,7 +1225,7 @@
     for (var i = 0; i < rules.folder_relocations.length; i++) {
       var rule = rules.folder_relocations[i];
       var folder = folderIndex.get(rule.from);
-      if (!folder || !pathInFocusScope(folder.path, focusPath)) {
+      if (!folder || !pathWithinScope(folder.path, focusPath)) {
         continue;
       }
       actions.push(normalizeAction({
@@ -1033,7 +1252,7 @@
     for (var j = 0; j < rules.bookmark_relocations.length; j++) {
       var bkRule = rules.bookmark_relocations[j];
       for (const bookmark of snapshot.bookmarks || []) {
-        if (!pathInFocusScope(bookmark.folder_path, focusPath) || !bookmarkMatchesRule(bookmark, bkRule)) {
+        if (!pathWithinScope(bookmark.folder_path, focusPath) || !bookmarkMatchesRule(bookmark, bkRule)) {
           continue;
         }
         actions.push(normalizeAction({
@@ -1096,6 +1315,8 @@
       "Confidence is a number from 0.0 to 1.0. Set confidence=0.95 for obvious moves, 0.5 for uncertain ones.",
       "When title and domain evidence is insufficient, use keep_for_review instead of guessing.",
       "The browser extension will lint and post-process your output before execution.",
+      "When you can classify confidently from title, domain, and folder_path, decide immediately. Keep reasons under 15 words. Do not deliberate — a quick correct classification is better than slow overthinking.",
+      "For bookmarks where title and domain alone are ambiguous, use web search/grounding only if your API runtime actually provides it. Batch all uncertain URLs into one search pass; if no search tool is available, keep them for review instead of inferring page content.",
       "",
       "Required JSON structure:",
       '{"summary":{"overview":"brief plan description"},"activations":[{"op":"move_bookmark","node_id":"bookmark-id","target":"/folder/path","duplicate_of_id":"","confidence":0.92,"reason":"why this move makes sense"},{"op":"create_folder","node_id":"","target":"/new/folder/path","duplicate_of_id":"","confidence":0.88,"reason":"new category needed"},{"op":"delete_empty_folder","node_id":"folder-id","target":"","duplicate_of_id":"","confidence":0.9,"reason":"folder is empty and no longer needed"},{"op":"keep_for_review","node_id":"bookmark-id","target":"","duplicate_of_id":"","confidence":0.3,"reason":"unclear purpose from title alone"}]}',
@@ -1125,7 +1346,7 @@
     return lines.join(" ");
   }
 
-  function buildUserPrompt(snapshot, focusPath, userInstruction, preferences) {
+  function buildUserPrompt(snapshot, focusPath, userInstruction, preferences, batchInfo) {
     var rules = _cachedFastRules();
     var prefs = preferences || {};
     var protectRoot = prefs.protectRootLooseBookmarks !== "no";
@@ -1139,10 +1360,12 @@
     const prompt = [
       "Given this Edge bookmark snapshot and these guardrails, propose lightweight activation rows for a semantic reorganization plan.",
       "The snapshot was collected from chrome.bookmarks and enriched in fast mode with title/domain evidence only.",
-      "Be conservative: if the title/domain/folder path is not enough to determine what the page is about, emit keep_for_review instead of moving.",
-      "If a bookmark's purpose is genuinely unclear from its title and domain alone, keep it for review and mention in the reason that visiting the URL or searching its domain would clarify its category.",
+      "For bookmarks you can classify confidently from title, domain, and folder path: classify immediately, do not overthink.",
+      "For bookmarks where the title or domain is ambiguous: if your API runtime provides web search or grounding, visit all uncertain URLs in one batch pass, then classify based on the page content. Do NOT look up URLs one by one.",
+      "If search/grounding is unavailable, or if a bookmark remains unclear after searching, use keep_for_review and explain why.",
       "For move_bookmark or remove_duplicate, set node_id to the bookmark id from the snapshot.",
       "For move_folder or rename_folder, set node_id to the folder id from the snapshot.",
+      "Copy node_id exactly from B/F rows. Never use URLs, titles, domains, folder paths, numeric positions, or invented ids as node_id.",
       "For delete_empty_folder, set node_id to a folder id only when the snapshot shows 0 bookmarks and 0 subfolders for that folder.",
       "For move_bookmark or move_folder, set target to the absolute destination folder path.",
       "For rename_folder, set target to the new folder title.",
@@ -1154,10 +1377,18 @@
       prompt.push(`Focus on bookmarks currently under ${focusPath}. Do not propose unrelated changes outside that focus folder.`);
     }
     const instructionPrefix = userInstruction ? `User instruction: ${userInstruction}\n\n` : "";
-    return `${instructionPrefix}${prompt.join("\n")}\n\nRules:\n${JSON.stringify(rulesSummary)}\n\n${encodeSnapshot(snapshot, true)}`;
+    const batchText = batchInfo && batchInfo.totalParts > 1
+      ? [
+        `Part: ${batchInfo.partNumber}/${batchInfo.totalParts}. This part contains ${batchInfo.partBookmarkCount} bookmarks.`,
+        `Only return activations for node_ids present in this part. Return up to ${batchInfo.partBookmarkCount} activation rows for this part.`,
+        "The extension will merge and deduplicate all parts after every part returns.",
+        "",
+      ].join("\n")
+      : "";
+    return `${instructionPrefix}${prompt.join("\n")}\n\nRules:\n${JSON.stringify(rulesSummary)}\n\n${encodeSnapshotFolders(snapshot)}\n\n${batchText}${encodeSnapshotBookmarks(snapshot, true)}`;
   }
 
-  function buildRevisionUserPrompt(existingPlan, snapshot, userInstruction, preferences) {
+  function buildRevisionUserPrompt(existingPlan, snapshot, userInstruction, preferences, maxActions) {
     var rules = _cachedFastRules();
     var prefs = preferences || {};
     var protectRoot = prefs.protectRootLooseBookmarks !== "no";
@@ -1170,9 +1401,11 @@
     };
     return [
       "Revise the current reviewed bookmark plan according to the user instruction.",
-      "Return a complete replacement activation list, not a patch or commentary.",
-      "Preserve useful existing intentions that the instruction does not change.",
-      "Remove or modify activations that conflict with the instruction.",
+      "Return only changed activation rows: additions, replacements, or rows that should become keep_for_review.",
+      "Do not repeat unchanged activations from the existing plan. The extension will preserve unchanged rows locally.",
+      "To replace an existing bookmark or folder action, return one activation for the same node_id with the new target/op.",
+      "To stop executing an existing bookmark or folder action, return keep_for_review for the same node_id with a brief reason.",
+      `Return at most ${maxActions} changed activation rows unless the instruction explicitly requires more.`,
       "Do not invent bookmarks or folders that are not implied by the current snapshot.",
       "For move_bookmark or remove_duplicate, set node_id to the bookmark id from the snapshot.",
       "For move_folder or rename_folder, set node_id to the folder id from the snapshot.",
@@ -1201,6 +1434,10 @@
   }
 
   function encodeSnapshot(snapshot, includeStatus) {
+    return [encodeSnapshotFolders(snapshot), encodeSnapshotBookmarks(snapshot, includeStatus)].filter(Boolean).join("\n");
+  }
+
+  function encodeSnapshotFolders(snapshot) {
     var lines = [];
     if (snapshot.focus_path) {
       lines.push("Focus:" + snapshot.focus_path);
@@ -1210,6 +1447,11 @@
       var f = folders[fi];
       lines.push("F " + f.id + "|" + _pipeSafe(f.path) + "|" + (f.bookmark_count || 0) + "|" + (f.subfolder_count || 0));
     }
+    return lines.join("\n");
+  }
+
+  function encodeSnapshotBookmarks(snapshot, includeStatus) {
+    var lines = [];
     var bookmarks = snapshot.bookmarks || [];
     for (var bi = 0; bi < bookmarks.length; bi++) {
       var b = bookmarks[bi];
@@ -1480,9 +1722,9 @@
       path: String(folder.path || ""),
       parent_path: folder.parent_path || null,
       root_key: String(folder.root_key || ""),
-      depth: positiveInteger(folder.depth, 0),
-      bookmark_count: positiveInteger(folder.bookmark_count, 0),
-      subfolder_count: positiveInteger(folder.subfolder_count, 0),
+      depth: nonNegativeInteger(folder.depth, 0),
+      bookmark_count: nonNegativeInteger(folder.bookmark_count, 0),
+      subfolder_count: nonNegativeInteger(folder.subfolder_count, 0),
     };
   }
 
@@ -1498,7 +1740,7 @@
       top_level_folder: bookmark.top_level_folder || "",
       root_key: String(bookmark.root_key || ""),
       path: String(bookmark.path || ""),
-      depth: positiveInteger(bookmark.depth, 0),
+      depth: nonNegativeInteger(bookmark.depth, 0),
     };
   }
 
@@ -1549,7 +1791,7 @@
     return cleaned.length > 500 ? cleaned.slice(0, 500) : cleaned;
   }
 
-  function positiveInteger(value, fallback) {
+  function nonNegativeInteger(value, fallback) {
     const numberValue = Number(value);
     if (!Number.isFinite(numberValue) || numberValue < 0) {
       return fallback;
@@ -1564,7 +1806,7 @@
 
   function requestTimeoutMsWithinMv3Lifetime(value) {
     return Math.min(
-      positiveInteger(value, DEFAULT_REQUEST_TIMEOUT_MS),
+      nonNegativeInteger(value, DEFAULT_REQUEST_TIMEOUT_MS),
       MAX_EXTENSION_FETCH_TIMEOUT_MS,
     );
   }
