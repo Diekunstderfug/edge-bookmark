@@ -93,6 +93,48 @@ class ExtensionPlanLintTest(unittest.TestCase):
         self.assertEqual(len(cast(list[object], summary_dict["executableActions"])), 1)
         self.assertEqual(len(cast(list[object], summary_dict["reviewActions"])), 0)
 
+    def test_rejected_action_is_review_not_executable(self):
+        summary = self._node_eval(
+            """
+            BookmarkPlanLint.lintPlan({
+              actions: [{
+                action_id: 'a-1',
+                action_type: 'move_bookmark',
+                status: 'rejected',
+                reason: 'wrong destination',
+                confidence: 0.5,
+                bookmark_locator: { id: '10', title: 'Example', url: 'https://example.com' },
+                to_path: '/收藏夹栏/AI'
+              }]
+            })
+            """
+        )
+        summary_dict = cast(dict[str, object], summary)
+        self.assertEqual(summary_dict["ok"], True)
+        self.assertEqual(len(cast(list[object], summary_dict["executableActions"])), 0)
+        self.assertEqual(len(cast(list[object], summary_dict["reviewActions"])), 1)
+
+    def test_rejected_status_passes_lint_without_warning(self):
+        summary = self._node_eval(
+            """
+            BookmarkPlanLint.lintPlan({
+              actions: [{
+                action_id: 'a-1',
+                action_type: 'move_bookmark',
+                status: 'rejected',
+                reason: 'wrong destination',
+                confidence: 0.5,
+                bookmark_locator: { id: '10', title: 'Example', url: 'https://example.com' },
+                to_path: '/收藏夹栏/AI'
+              }]
+            })
+            """
+        )
+        summary_dict = cast(dict[str, object], summary)
+        self.assertEqual(summary_dict["ok"], True)
+        self.assertEqual(len(cast(list[object], summary_dict["warnings"])), 0)
+        self.assertEqual(len(cast(list[object], summary_dict["errors"])), 0)
+
 
 if __name__ == "__main__":
     _ = unittest.main()

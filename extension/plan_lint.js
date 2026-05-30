@@ -2,7 +2,7 @@
 
 (function attachBookmarkPlanLint(globalScope) {
   const KNOWN_ACTION_TYPES = new Set([...EXECUTABLE_ACTIONS, "keep_for_review"]);
-  const KNOWN_ACTION_STATUSES = new Set(["approved", "edited", "proposed", "blocked"]);
+  const KNOWN_ACTION_STATUSES = new Set(["approved", "edited", "proposed", "blocked", "rejected"]);
   const KNOWN_PLAN_KEYS = new Set([
     "actions",
     "backup_path",

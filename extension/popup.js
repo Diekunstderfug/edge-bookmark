@@ -19,7 +19,10 @@ const STRINGS = {
     btn_undo: "Undo Last Execution",
     btn_action_approve: "Approve",
     btn_action_agree: "Agree",
+    btn_action_reject: "Reject",
+    btn_action_unreject: "Undo Reject",
     placeholder_action_revise: "How should this change? (Enter to save)",
+    placeholder_rejection_reason: "Why rejected? (optional, Enter to save)",
     btn_download_report: "Download Execution Report",
     btn_continue: "Generate New Plan for Remaining",
     btn_save: "Save",
@@ -83,6 +86,7 @@ const STRINGS = {
     stat_review: "Review",
     stat_errors: "Errors",
     stat_warnings: "Warnings",
+    stat_rejected: "Rejected",
     opt_all_bookmarks: "All bookmarks",
     opt_protect_yes: "Protected — do not auto-move root loose bookmarks",
     opt_protect_no: "Allowed — may move root loose bookmarks into subfolders",
@@ -95,6 +99,8 @@ const STRINGS = {
     placeholder_instruction: "Example: keep work folders untouched; move React and JS docs into Programming; leave uncertain items for review.",
     cat_review: "Needs review",
     cat_review_hint: "Requires manual confirmation",
+    cat_rejected: "Rejected",
+    cat_rejected_hint: "Skipped in this round",
     action_move: "Move",
     action_rename: "Rename",
     action_create: "Create",
@@ -128,7 +134,10 @@ const STRINGS = {
     btn_undo: "撤销上次执行",
     btn_action_approve: "通过",
     btn_action_agree: "同意",
+    btn_action_reject: "拒绝",
+    btn_action_unreject: "撤销拒绝",
     placeholder_action_revise: "这条怎么改？（回车保存）",
+    placeholder_rejection_reason: "拒绝理由（可选，回车保存）",
     btn_download_report: "\u4e0b\u8f7d\u6267\u884c\u62a5\u544a",
     btn_continue: "\u4e3a\u5269\u4f59\u9879\u751f\u6210\u65b0\u8ba1\u5212",
     btn_save: "\u4fdd\u5b58",
@@ -192,6 +201,7 @@ const STRINGS = {
     stat_review: "\u5f85\u5ba1\u67e5",
     stat_errors: "\u9519\u8bef",
     stat_warnings: "\u8b66\u544a",
+    stat_rejected: "\u5df2\u62d2\u7edd",
     opt_all_bookmarks: "\u5168\u90e8\u4e66\u7b7e",
     opt_protect_yes: "\u4fdd\u62a4 \u2014 \u4e0d\u81ea\u52a8\u6574\u7406\u6839\u76ee\u5f55\u4e0b\u7684\u6563\u4e66\u7b7e",
     opt_protect_no: "\u5141\u8bb8 \u2014 \u53ef\u5c06\u6839\u76ee\u5f55\u6563\u4e66\u7b7e\u5f52\u5165\u5b50\u6587\u4ef6\u5939",
@@ -204,6 +214,8 @@ const STRINGS = {
     placeholder_instruction: "例如：工作区不要动；React/JS 文档放进编程；不确定的先保留审查。",
     cat_review: "\u9700\u8981\u5ba1\u67e5",
     cat_review_hint: "\u9700\u4eba\u5de5\u786e\u8ba4\u6216\u8865\u5145\u4fe1\u606f",
+    cat_rejected: "\u5df2\u62d2\u7edd",
+    cat_rejected_hint: "\u672c\u8f6e\u8df3\u8fc7",
     action_move: "\u79fb\u52a8",
     action_rename: "\u91cd\u547d\u540d",
     action_create: "\u521b\u5efa",
@@ -269,6 +281,7 @@ const DEFAULT_UI_DRAFT = {
   maxRetries: "",
 };
 const REVIEW_CATEGORY_KEY = "__review__";
+const REJECTED_CATEGORY_KEY = "__rejected__";
 
 const fileInput = document.getElementById("plan-file");
 const apiKeyInput = document.getElementById("api-key");
@@ -289,6 +302,7 @@ const executableCountEl = document.getElementById("executable-count");
 const reviewCountEl = document.getElementById("review-count");
 const errorCountEl = document.getElementById("error-count");
 const warningCountEl = document.getElementById("warning-count");
+const rejectedCountEl = document.getElementById("rejected-count");
 const previewListEl = document.getElementById("preview-list");
 const executeButton = document.getElementById("execute-btn");
 const exportSnapshotButton = document.getElementById("export-snapshot-btn");
@@ -378,7 +392,7 @@ saveCredentialsButton.addEventListener("click", async () => {
     await saveLlmSettings(settings);
     if (apiKeyInput.value.trim()) {
       await saveEncryptedApiKey(apiKeyInput.value.trim());
-      await saveEncryptedApiKeyDraft(apiKeyInput.value.trim());
+      await clearEncryptedApiKeyDraft();
       requestInputCacheWrite();
       updateKeyStorageStatus(t("key_saved_with_key"), "ok");
     } else {
@@ -401,7 +415,7 @@ forgetKeyButton.addEventListener("click", async () => {
   forgetKeyButton.disabled = true;
   try {
     await chromeStorageRemove(ENCRYPTED_KEY_STORAGE_NAME);
-    await chromeStorageRemove(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
+    await clearEncryptedApiKeyDraft();
     apiKeyInput.value = "";
     requestInputCacheWrite();
     updateKeyStorageStatus(t("key_removed"), "warning");
@@ -516,10 +530,23 @@ reviseAiButton.addEventListener("click", async () => {
   for (const [key, note] of pendingReviseNotes) {
     perActionNotes.push(`- [${key}]: ${note}`);
   }
+  const rejectedNotes = [];
+  for (const action of loadedPlan.actions || []) {
+    if (String(action.status || "").trim() === "rejected") {
+      const title = actionTitle(action);
+      const reason = action.details && action.details.rejection_reason
+        ? ` (reason: ${action.details.rejection_reason})`
+        : "";
+      rejectedNotes.push(`- "${title}"${reason}`);
+    }
+  }
   const parts = [];
   if (globalInstruction) parts.push(globalInstruction);
   if (perActionNotes.length > 0) {
     parts.push("Per-action revision notes:\n" + perActionNotes.join("\n"));
+  }
+  if (rejectedNotes.length > 0) {
+    parts.push("The user rejected these actions — do not propose them again:\n" + rejectedNotes.join("\n"));
   }
   const userInstruction = parts.join("\n\n");
   if (!userInstruction) {
@@ -858,7 +885,7 @@ async function persistInputCache() {
   if (apiKeyDraft) {
     await saveEncryptedApiKeyDraft(apiKeyDraft);
   } else {
-    await chromeStorageRemove(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
+    await clearEncryptedApiKeyDraft();
   }
 }
 
@@ -1029,12 +1056,18 @@ function renderSummary(summary) {
     statusEl.textContent = t("lint_ok");
   }
 
+  const rejectedCount = summary.reviewActions.filter(
+    (a) => String(a.status || "").trim() === "rejected"
+  ).length;
+  const nonRejectedReviewCount = summary.reviewActions.length - rejectedCount;
+
   statsEl.hidden = false;
   totalCountEl.textContent = String(summary.totalActions);
   executableCountEl.textContent = String(summary.executableActions.length);
-  reviewCountEl.textContent = String(summary.reviewActions.length);
+  reviewCountEl.textContent = String(nonRejectedReviewCount);
   errorCountEl.textContent = String(summary.errors.length);
   warningCountEl.textContent = String(summary.warnings.length);
+  rejectedCountEl.textContent = String(rejectedCount);
 
   previewListEl.innerHTML = "";
   if (!summary.ok) {
@@ -1095,7 +1128,11 @@ function groupActionsByCategory(actions) {
 }
 
 function categoryKeyForAction(action) {
-  if (actionDisplayStatus(action) !== "executable") {
+  const displayStatus = actionDisplayStatus(action);
+  if (displayStatus === "rejected") {
+    return REJECTED_CATEGORY_KEY;
+  }
+  if (displayStatus !== "executable") {
     return REVIEW_CATEGORY_KEY;
   }
   const type = String(action.action_type || "");
@@ -1116,6 +1153,10 @@ function categoryKeyForAction(action) {
 
 function sortCategories(categories) {
   return categories.slice().sort((a, b) => {
+    const aIsRejected = a.key === REJECTED_CATEGORY_KEY;
+    const bIsRejected = b.key === REJECTED_CATEGORY_KEY;
+    if (aIsRejected && !bIsRejected) return 1;
+    if (!aIsRejected && bIsRejected) return -1;
     const aIsReview = a.key === REVIEW_CATEGORY_KEY;
     const bIsReview = b.key === REVIEW_CATEGORY_KEY;
     if (aIsReview && !bIsReview) return 1;
@@ -1132,6 +1173,7 @@ function actionDisplayStatus(action) {
   const status = String(action.status || "").trim();
   if (status === "approved" || status === "edited") return "executable";
   if (status === "blocked") return "blocked";
+  if (status === "rejected") return "rejected";
   return "pending";
 }
 
@@ -1155,6 +1197,21 @@ function approveAction(action) {
   loadPlan(loadedPlan);
 }
 
+function rejectAction(action) {
+  action.status = "rejected";
+  saveLastPlan(loadedPlan);
+  loadPlan(loadedPlan);
+}
+
+function unrejectAction(action) {
+  action.status = "proposed";
+  if (action.details) {
+    delete action.details.rejection_reason;
+  }
+  saveLastPlan(loadedPlan);
+  loadPlan(loadedPlan);
+}
+
 function actionReviewAgreed(action) {
   if (String(action.action_type || "") === "keep_for_review") {
     return !!(action.details && action.details.review_agreed);
@@ -1164,8 +1221,18 @@ function actionReviewAgreed(action) {
 
 function buildCategoryElement(category) {
   const isReviewCategory = category.key === REVIEW_CATEGORY_KEY;
-  const displayName = isReviewCategory ? t("cat_review") : lastSegment(category.path);
-  const subtitle = isReviewCategory ? t("cat_review_hint") : category.path;
+  const isRejectedCategory = category.key === REJECTED_CATEGORY_KEY;
+  let displayName, subtitle;
+  if (isRejectedCategory) {
+    displayName = t("cat_rejected");
+    subtitle = t("cat_rejected_hint");
+  } else if (isReviewCategory) {
+    displayName = t("cat_review");
+    subtitle = t("cat_review_hint");
+  } else {
+    displayName = lastSegment(category.path);
+    subtitle = category.path;
+  }
   const actionCount = category.actions.length;
 
   const group = document.createElement("div");
@@ -1245,8 +1312,11 @@ function buildActionItem(action, isReviewCategory = false) {
   const toPath = String(action.to_path || action.target_path || action.to_name || "");
   const needsReview = actionDisplayStatus(action) !== "executable";
 
+  const displayStatus = actionDisplayStatus(action);
+  const isRejected = displayStatus === "rejected";
+
   const item = document.createElement("div");
-  item.className = "action-item";
+  item.className = "action-item" + (isRejected ? " rejected" : "");
 
   const titleEl = document.createElement("div");
   titleEl.className = "action-title";
@@ -1275,29 +1345,47 @@ function buildActionItem(action, isReviewCategory = false) {
     metaEl.appendChild(moveHint);
   }
 
+  const controls = document.createElement("div");
+  controls.className = "action-controls";
+
   if (shouldShowQuickAgreeAction(action, isReviewCategory)) {
     const isAgreed = actionReviewAgreed(action);
-    const quickApproveLabel = document.createElement("label");
-    quickApproveLabel.className = "action-quick-approve" + (isAgreed ? " agreed" : "");
-    quickApproveLabel.title = t("btn_action_agree");
-    quickApproveLabel.addEventListener("click", (e) => e.stopPropagation());
-
-    const quickApproveInput = document.createElement("input");
-    quickApproveInput.type = "checkbox";
-    quickApproveInput.checked = isAgreed;
-    quickApproveInput.disabled = isAgreed;
-    quickApproveInput.setAttribute("aria-label", t("btn_action_agree"));
-    quickApproveInput.addEventListener("change", (e) => {
+    const agreeBtn = document.createElement("button");
+    agreeBtn.type = "button";
+    agreeBtn.className = "action-agree";
+    agreeBtn.textContent = t("btn_action_agree");
+    agreeBtn.disabled = isAgreed;
+    agreeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       approveAction(action);
     });
+    controls.appendChild(agreeBtn);
+  }
 
-    const quickApproveText = document.createElement("span");
-    quickApproveText.textContent = t("btn_action_agree");
+  if (!isRejected) {
+    const rejectBtn = document.createElement("button");
+    rejectBtn.type = "button";
+    rejectBtn.className = "action-reject";
+    rejectBtn.textContent = t("btn_action_reject");
+    rejectBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      rejectAction(action);
+    });
+    controls.appendChild(rejectBtn);
+  } else {
+    const unrejectBtn = document.createElement("button");
+    unrejectBtn.type = "button";
+    unrejectBtn.className = "action-unreject";
+    unrejectBtn.textContent = t("btn_action_unreject");
+    unrejectBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      unrejectAction(action);
+    });
+    controls.appendChild(unrejectBtn);
+  }
 
-    quickApproveLabel.appendChild(quickApproveInput);
-    quickApproveLabel.appendChild(quickApproveText);
-    metaEl.appendChild(quickApproveLabel);
+  if (controls.children.length > 0) {
+    metaEl.appendChild(controls);
   }
 
   const reasonEl = document.createElement("div");
@@ -1347,7 +1435,51 @@ function buildActionItem(action, isReviewCategory = false) {
     }
   });
 
+  if (isRejected) {
+    const rejectionInput = document.createElement("input");
+    rejectionInput.type = "text";
+    rejectionInput.className = "action-rejection-input";
+    rejectionInput.placeholder = t("placeholder_rejection_reason");
+    rejectionInput.value = (action.details && action.details.rejection_reason) || "";
+    if (rejectionInput.value) {
+      rejectionInput.classList.add("has-note");
+    }
+    rejectionInput.addEventListener("click", (e) => e.stopPropagation());
+    rejectionInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const text = rejectionInput.value.trim();
+        action.details = {
+          ...(action.details || {}),
+          rejection_reason: text || "",
+        };
+        if (text) {
+          rejectionInput.classList.add("has-note");
+        } else {
+          rejectionInput.classList.remove("has-note");
+        }
+        saveLastPlan(loadedPlan);
+        rejectionInput.blur();
+      }
+    });
+    rejectionInput.addEventListener("blur", () => {
+      const text = rejectionInput.value.trim();
+      action.details = {
+        ...(action.details || {}),
+        rejection_reason: text || "",
+      };
+      if (text) {
+        rejectionInput.classList.add("has-note");
+      } else {
+        rejectionInput.classList.remove("has-note");
+      }
+      saveLastPlan(loadedPlan);
+    });
+    item.appendChild(rejectionInput);
+  }
+
   item.addEventListener("click", () => {
+    if (isRejected) return;
     const wasHidden = !reviseInput.classList.contains("open");
     reviseInput.classList.toggle("open");
     if (wasHidden) reviseInput.focus();
@@ -1802,7 +1934,7 @@ function updateEndpointPreview() {
     } else if (apiStyle === "completions") {
       endpointPreviewEl.textContent = `Will call ${baseUrl}/completions.`;
     } else {
-      endpointPreviewEl.textContent = `Will try ${baseUrl}/responses, ${baseUrl}/chat/completions, then ${baseUrl}/completions.`;
+      endpointPreviewEl.textContent = `Will try ${baseUrl}/chat/completions, then ${baseUrl}/completions, then ${baseUrl}/responses.`;
     }
   } catch (error) {
     endpointPreviewEl.className = "hint error";
@@ -1839,14 +1971,40 @@ async function loadEncryptedApiKey() {
 }
 
 async function saveEncryptedApiKeyDraft(apiKey) {
-  await saveEncryptedSecret(ENCRYPTED_KEY_DRAFT_STORAGE_NAME, apiKey);
+  const area = draftStorageArea();
+  await saveEncryptedSecret(ENCRYPTED_KEY_DRAFT_STORAGE_NAME, apiKey, area);
+  if (area !== chrome.storage.local) {
+    await chromeStorageRemove(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
+  }
 }
 
 async function loadEncryptedApiKeyDraft() {
-  return loadEncryptedSecret(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
+  try {
+    return await loadEncryptedSecret(ENCRYPTED_KEY_DRAFT_STORAGE_NAME, draftStorageArea());
+  } catch (sessionError) {
+    try {
+      const legacyDraft = await loadEncryptedSecret(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
+      await chromeStorageRemove(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
+      await saveEncryptedApiKeyDraft(legacyDraft);
+      return legacyDraft;
+    } catch (_legacyError) {
+      throw sessionError;
+    }
+  }
 }
 
-async function saveEncryptedSecret(storageName, value) {
+async function clearEncryptedApiKeyDraft() {
+  await Promise.all([
+    chromeStorageRemove(ENCRYPTED_KEY_DRAFT_STORAGE_NAME).catch(() => {}),
+    chromeStorageRemoveFromArea(draftStorageArea(), ENCRYPTED_KEY_DRAFT_STORAGE_NAME).catch(() => {}),
+  ]);
+}
+
+function draftStorageArea() {
+  return chrome.storage && chrome.storage.session ? chrome.storage.session : chrome.storage.local;
+}
+
+async function saveEncryptedSecret(storageName, value, area = chrome.storage.local) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await deriveAutomaticStorageKey(salt);
@@ -1855,7 +2013,7 @@ async function saveEncryptedSecret(storageName, value) {
     key,
     new TextEncoder().encode(value),
   );
-  await chromeStorageSet(storageName, {
+  await chromeStorageSetFromArea(area, storageName, {
     version: 2,
     kdf: "SHA-256(runtime-id)",
     cipher: "AES-GCM",
@@ -1866,8 +2024,8 @@ async function saveEncryptedSecret(storageName, value) {
   });
 }
 
-async function loadEncryptedSecret(storageName) {
-  const record = await chromeStorageGet(storageName);
+async function loadEncryptedSecret(storageName, area = chrome.storage.local) {
+  const record = await chromeStorageGetFromArea(area, storageName);
   if (!record) {
     throw new Error(t("key_no_key"));
   }
@@ -1920,6 +2078,18 @@ function chromeStorageGetFromArea(area, key) {
 function chromeStorageSetFromArea(area, key, value) {
   return new Promise((resolve, reject) => {
     area.set({ [key]: value }, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function chromeStorageRemoveFromArea(area, key) {
+  return new Promise((resolve, reject) => {
+    area.remove(key, () => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;

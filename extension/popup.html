@@ -304,47 +304,61 @@
         cursor: pointer;
       }
 
-      .action-item .action-quick-approve {
+      .action-item .action-controls {
         display: inline-flex;
         align-items: center;
-        gap: 3px;
-        width: auto;
-        margin: 0 0 0 auto;
-        padding: 1px 4px;
-        border: 1px solid #b7d8c0;
-        border-radius: 4px;
-        background: #f0fdf4;
-        color: #166534;
+        gap: 4px;
+        margin-left: auto;
+      }
+
+      .action-item .action-agree,
+      .action-item .action-reject,
+      .action-item .action-unreject {
         font-size: 10px;
-        line-height: 1.2;
-        font-weight: 600;
+        border: none;
+        border-radius: 3px;
+        padding: 2px 8px;
         cursor: pointer;
+        width: auto;
+        font-weight: 600;
+        line-height: 1.4;
       }
 
-      .action-item .action-quick-approve input {
-        width: 11px;
-        height: 11px;
-        margin: 0;
-        accent-color: #166534;
+      .action-item .action-agree {
+        background: #166534;
+        color: #fff;
       }
 
-      .action-item .action-quick-approve:hover {
-        background: #dcfce7;
-        border-color: #86c89b;
+      .action-item .action-agree:hover:not(:disabled) {
+        background: #15803d;
       }
 
-      .action-item .action-quick-approve.agreed {
-        background: #e8f5ec;
-        border-color: #c5dfcc;
-        color: #2d6a3e;
+      .action-item .action-agree:disabled {
+        background: #86efac;
+        color: #166534;
         cursor: default;
       }
 
-      .action-item .action-quick-approve.agreed input {
-        cursor: default;
+      .action-item .action-reject {
+        background: #991b1b;
+        color: #fff;
       }
 
-      .action-item .action-revise-input {
+      .action-item .action-reject:hover {
+        background: #b91c1c;
+      }
+
+      .action-item .action-unreject {
+        background: #4b5563;
+        color: #fff;
+      }
+
+      .action-item .action-unreject:hover {
+        background: #6b7280;
+      }
+
+      .action-item .action-revise-input,
+      .action-item .action-rejection-input {
         display: none;
         width: 100%;
         box-sizing: border-box;
@@ -356,6 +370,18 @@
         font-family: inherit;
       }
 
+      .action-item .action-rejection-input {
+        display: block;
+        border-style: dashed;
+        border-color: #d1d5db;
+        background: #fafafa;
+      }
+
+      .action-item .action-rejection-input::placeholder {
+        color: #9ca3af;
+        font-style: italic;
+      }
+
       .action-item .action-revise-input.open {
         display: block;
       }
@@ -363,6 +389,12 @@
       .action-item .action-revise-input.has-note {
         border-color: #1e3a5f;
         background: #f0f4ff;
+      }
+
+      .action-item .action-rejection-input.has-note {
+        border-color: #991b1b;
+        border-style: solid;
+        background: #fef2f2;
       }
 
       .action-item .confidence-dot {
@@ -376,6 +408,16 @@
       .action-item .confidence-dot.high { background: #166534; }
       .action-item .confidence-dot.medium { background: #92400e; }
       .action-item .confidence-dot.low { background: #9f1239; }
+
+      .action-item.rejected {
+        opacity: 0.6;
+        background: #f4f6f8;
+      }
+
+      .action-item.rejected .action-title {
+        text-decoration: line-through;
+        color: #7a8a99;
+      }
 
       .error {
         color: #9f1239;
@@ -458,6 +500,7 @@
           <div class="stat"><strong id="review-count">0</strong><span data-i18n="stat_review">Review</span></div>
           <div class="stat"><strong id="error-count">0</strong><span data-i18n="stat_errors">Errors</span></div>
           <div class="stat"><strong id="warning-count">0</strong><span data-i18n="stat_warnings">Warnings</span></div>
+          <div class="stat"><strong id="rejected-count">0</strong><span data-i18n="stat_rejected">Rejected</span></div>
         </div>
       </div>
 
