@@ -47,6 +47,7 @@ data/
 # Python runtime artifacts.
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -61,3 +62,4 @@ env/
 # OS/editor noise.
 .DS_Store
 *.swp
+.tmp*
