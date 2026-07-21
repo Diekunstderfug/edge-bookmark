@@ -295,6 +295,128 @@ class SemanticFlowTest(unittest.TestCase):
         self.assertEqual(len(diff["moved_bookmarks"]), 1)
         self.assertEqual(diff["moved_bookmarks"][0]["to_path"], "/收藏夹栏/AI")
 
+    def test_snapshot_diff_uses_ids_for_duplicate_bookmarks(self):
+        before = {
+            "created_at": "2026-04-21T10:00:00",
+            "bookmarks": [
+                {
+                    "id": "10",
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏",
+                },
+                {
+                    "id": "11",
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏/Read Later",
+                },
+            ],
+        }
+        after = {
+            "created_at": "2026-04-21T10:05:00",
+            "bookmarks": [
+                {
+                    "id": "10",
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏/AI",
+                },
+            ],
+        }
+        diff = diff_snapshot_documents(before, after)
+        self.assertEqual(len(diff["moved_bookmarks"]), 1)
+        self.assertEqual(diff["moved_bookmarks"][0]["from_path"], "/收藏夹栏")
+        self.assertEqual(diff["moved_bookmarks"][0]["to_path"], "/收藏夹栏/AI")
+        self.assertEqual(diff["removed_bookmarks"], [
+            {
+                "title": "Example",
+                "normalized_url": "https://example.com/",
+                "folder_path": "/收藏夹栏/Read Later",
+            }
+        ])
+        self.assertEqual(diff["added_bookmarks"], [])
+
+    def test_snapshot_diff_fallback_matches_duplicate_url_title_as_multimap(self):
+        before = {
+            "created_at": "2026-04-21T10:00:00",
+            "bookmarks": [
+                {
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏",
+                },
+                {
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏/Read Later",
+                },
+            ],
+        }
+        after = {
+            "created_at": "2026-04-21T10:05:00",
+            "bookmarks": [
+                {
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏",
+                },
+                {
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏/Archive",
+                },
+            ],
+        }
+        diff = diff_snapshot_documents(before, after)
+        self.assertEqual(diff["unchanged_bookmarks"], 1)
+        self.assertEqual(len(diff["moved_bookmarks"]), 1)
+        self.assertEqual(diff["moved_bookmarks"][0]["from_path"], "/收藏夹栏/Read Later")
+        self.assertEqual(diff["moved_bookmarks"][0]["to_path"], "/收藏夹栏/Archive")
+        self.assertEqual(diff["removed_bookmarks"], [])
+        self.assertEqual(diff["added_bookmarks"], [])
+
+    def test_snapshot_diff_does_not_fallback_match_conflicting_ids(self):
+        before = {
+            "created_at": "2026-04-21T10:00:00",
+            "bookmarks": [
+                {
+                    "id": "10",
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏",
+                },
+            ],
+        }
+        after = {
+            "created_at": "2026-04-21T10:05:00",
+            "bookmarks": [
+                {
+                    "id": "99",
+                    "title": "Example",
+                    "normalized_url": "https://example.com/",
+                    "folder_path": "/收藏夹栏",
+                },
+            ],
+        }
+        diff = diff_snapshot_documents(before, after)
+        self.assertEqual(diff["unchanged_bookmarks"], 0)
+        self.assertEqual(diff["moved_bookmarks"], [])
+        self.assertEqual(diff["removed_bookmarks"], [
+            {
+                "title": "Example",
+                "normalized_url": "https://example.com/",
+                "folder_path": "/收藏夹栏",
+            }
+        ])
+        self.assertEqual(diff["added_bookmarks"], [
+            {
+                "title": "Example",
+                "normalized_url": "https://example.com/",
+                "folder_path": "/收藏夹栏",
+            }
+        ])
+
     def test_rename_folder_in_supported_ai_actions(self):
         self.assertIn("rename_folder", SUPPORTED_AI_ACTIONS)
         self.assertIn("delete_empty_folder", SUPPORTED_AI_ACTIONS)

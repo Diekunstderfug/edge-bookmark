@@ -11,6 +11,17 @@
  */
 
 (function (globalScope) {
+  if (
+    (!globalScope.BookmarkAdvisor || !globalScope.BookmarkAdvisor.Protocol) &&
+    typeof require === "function"
+  ) {
+    require("./shared/message_protocol.js");
+  }
+  const protocol = globalScope.BookmarkAdvisor && globalScope.BookmarkAdvisor.Protocol;
+  if (!protocol) {
+    throw new Error("shared/message_protocol.js must load before offscreen.js");
+  }
+  const MESSAGE_TYPES = protocol.MESSAGE_TYPES;
   // ── Shared logging utility ──
   function debugLog(message, level) {
     var logLevel = level || "log";
@@ -28,7 +39,7 @@
   let _abortController = null;
   let _keepaliveIntervalId = null;
 
-  const OFFSCREEN_RESULT_STORAGE = "bookmarkAdvisorOffscreenResult";
+  const OFFSCREEN_RESULT_STORAGE = protocol.STORAGE_KEYS.OFFSCREEN_RESULT;
 
   // 每 15s 向 SW 发送 keepalive ping，重置 SW idle timer
   function startKeepalivePing(jobId) {
@@ -38,7 +49,7 @@
         stopKeepalivePing();
         return;
       }
-      chrome.runtime.sendMessage({ type: "offscreen-keepalive", jobId }).catch(() => {});
+      chrome.runtime.sendMessage({ type: MESSAGE_TYPES.OFFSCREEN_KEEPALIVE, jobId }).catch(() => {});
     }, 15000);
   }
 
@@ -91,7 +102,7 @@
       if (_currentJobId !== jobId) {
         return;
       }
-      void sendToSw("offscreen-progress", jobId, { message }).catch(() => {});
+      void sendToSw(MESSAGE_TYPES.OFFSCREEN_PROGRESS, jobId, { message }).catch(() => {});
     };
   }
 
@@ -111,7 +122,7 @@
       await persistOffscreenResult(jobId, { ok: true, result });
       try {
         debugLog(`result persisted, sending offscreen-result to SW...`, "log");
-        await sendToSw("offscreen-result", jobId, { result });
+        await sendToSw(MESSAGE_TYPES.OFFSCREEN_RESULT, jobId, { result });
         debugLog(`offscreen-result sent to SW`, "log");
       } catch (notifyError) {
         debugLog(`offscreen-result notify failed after persist (non-fatal): ` + (notifyError?.message || notifyError), "warn");
@@ -123,7 +134,7 @@
         abortLike: error.name === "AbortError" || /aborted|cancelled by user/i.test(error.message || ""),
       };
       await persistOffscreenResult(jobId, { ok: false, ...errorPayload });
-      await sendToSw("offscreen-error", jobId, errorPayload);
+      await sendToSw(MESSAGE_TYPES.OFFSCREEN_ERROR, jobId, errorPayload);
     } finally {
       stopKeepalivePing();
       _currentJobId = null;
@@ -149,7 +160,7 @@
       await persistOffscreenResult(jobId, { ok: true, result });
       try {
         debugLog(`result persisted, sending offscreen-result to SW...`, "log");
-        await sendToSw("offscreen-result", jobId, { result });
+        await sendToSw(MESSAGE_TYPES.OFFSCREEN_RESULT, jobId, { result });
         debugLog(`offscreen-result sent to SW`, "log");
       } catch (notifyError) {
         debugLog(`offscreen-result notify failed after persist (non-fatal): ` + (notifyError?.message || notifyError), "warn");
@@ -161,7 +172,7 @@
         abortLike: error.name === "AbortError" || /aborted|cancelled by user/i.test(error.message || ""),
       };
       await persistOffscreenResult(jobId, { ok: false, ...errorPayload });
-      await sendToSw("offscreen-error", jobId, errorPayload);
+      await sendToSw(MESSAGE_TYPES.OFFSCREEN_ERROR, jobId, errorPayload);
     } finally {
       stopKeepalivePing();
       _currentJobId = null;
@@ -176,7 +187,7 @@
       return false;
     }
 
-    if (message.type === "offscreen-llm") {
+    if (message.type === MESSAGE_TYPES.OFFSCREEN_LLM) {
       if (_currentJobId) {
         sendResponse({ ok: false, error: `Offscreen busy with job ${_currentJobId}` });
         return false;
@@ -194,13 +205,13 @@
       } else if (message.mode === "revise") {
         void handleRevise(jobId, message.payload);
       } else {
-        void sendToSw("offscreen-error", jobId, { error: `Unknown mode: ${message.mode}` }).catch(() => {});
+        void sendToSw(MESSAGE_TYPES.OFFSCREEN_ERROR, jobId, { error: `Unknown mode: ${message.mode}` }).catch(() => {});
         _currentJobId = null;
       }
       return false;
     }
 
-    if (message.type === "offscreen-cancel") {
+    if (message.type === MESSAGE_TYPES.OFFSCREEN_CANCEL) {
       stopKeepalivePing();
       if (_abortController && !_abortController.signal.aborted) {
         _abortController.abort();
@@ -209,7 +220,7 @@
       return false;
     }
 
-    if (message.type === "offscreen-ping") {
+    if (message.type === MESSAGE_TYPES.OFFSCREEN_PING) {
       sendResponse({ ok: true, busy: !!_currentJobId, jobId: _currentJobId });
       return false;
     }
@@ -218,5 +229,5 @@
   });
 
   // 页面加载完成后向 SW 报告就绪
-  void sendToSw("offscreen-ready", null, {}).catch(() => {});
+  void sendToSw(MESSAGE_TYPES.OFFSCREEN_READY, null, {}).catch(() => {});
 })(globalThis);

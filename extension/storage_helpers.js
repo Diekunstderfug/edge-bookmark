@@ -1,106 +1,37 @@
-/* Shared storage constants and helpers for popup.js and service_worker.js. */
+/* Compatibility facade for shared storage and path helpers. */
 
-var LAST_PLAN_STORAGE_NAME = "bookmarkAdvisorLastPlan";
-var LAST_REPORT_STORAGE_NAME = "bookmarkAdvisorLastReport";
-var ACTIVE_JOB_STORAGE_NAME = "bookmarkAdvisorActiveJob";
-var UNDO_LOG_STORAGE_NAME = "bookmarkAdvisorUndoLog";
-
-function debugLog(message, level) {
-  var logLevel = level || "log";
-  var prefix = "[BookmarkAdvisor]";
-  if (logLevel === "error") {
-    console.error(prefix, message);
-  } else if (logLevel === "warn") {
-    console.warn(prefix, message);
-  } else {
-    console.log(prefix, message);
-  }
-}
-
-function chromeStorageSet(key, value) {
-  return new Promise(function (resolve, reject) {
-    chrome.storage.local.set({ [key]: value }, function () {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
-function chromeStorageGet(key) {
-  return new Promise(function (resolve, reject) {
-    chrome.storage.local.get(key, function (result) {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve(result[key]);
-    });
-  });
-}
-
-function chromeStorageRemove(key) {
-  return new Promise(function (resolve, reject) {
-    chrome.storage.local.remove(key, function () {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
-function saveLastPlan(plan) {
-  return chromeStorageSet(LAST_PLAN_STORAGE_NAME, {
-    plan: plan,
-    saved_at: new Date().toISOString(),
-  });
-}
-
-function saveLastReport(report) {
-  return chromeStorageSet(LAST_REPORT_STORAGE_NAME, report);
-}
-
-function normalizePath(path) {
-  if (!path || typeof path !== 'string') return '/';
-
-  let normalized = path.trim();
-
-  if (!normalized.startsWith('/')) {
-    normalized = '/' + normalized;
+(function attachLegacyStorageHelpers(globalScope) {
+  if (typeof require === "function") {
+    if (!globalScope.BookmarkAdvisor || !globalScope.BookmarkAdvisor.Protocol) {
+      require("./shared/message_protocol.js");
+    }
+    if (!globalScope.BookmarkAdvisor.Storage) {
+      require("./shared/storage.js");
+    }
+    if (!globalScope.BookmarkAdvisor.PathUtils) {
+      require("./shared/path_utils.js");
+    }
   }
 
-  normalized = normalized.replace(/\/+$/, '');
+  const root = globalScope.BookmarkAdvisor || {};
+  const protocol = root.Protocol;
+  const storage = root.Storage;
+  const paths = root.PathUtils;
+  if (!protocol || !storage || !paths) {
+    throw new Error(
+      "shared/message_protocol.js, shared/storage.js, and shared/path_utils.js must load before storage_helpers.js",
+    );
+  }
 
-  normalized = normalized.replace(/\/+/g, '/');
-
-  if (normalized === '') normalized = '/';
-
-  return normalized;
-}
-
-function pathWithinScope(path, scope) {
-  if (!scope) return true;
-  const normPath = normalizePath(path);
-  const normScope = normalizePath(scope);
-  return normPath === normScope || normPath.startsWith(normScope + "/");
-}
-
-/* Ensure visibility when loaded via Node require() in tests. */
-if (typeof globalThis !== "undefined") {
-  globalThis.LAST_PLAN_STORAGE_NAME = LAST_PLAN_STORAGE_NAME;
-  globalThis.LAST_REPORT_STORAGE_NAME = LAST_REPORT_STORAGE_NAME;
-  globalThis.ACTIVE_JOB_STORAGE_NAME = ACTIVE_JOB_STORAGE_NAME;
-  globalThis.UNDO_LOG_STORAGE_NAME = UNDO_LOG_STORAGE_NAME;
-  globalThis.chromeStorageSet = chromeStorageSet;
-  globalThis.chromeStorageGet = chromeStorageGet;
-  globalThis.chromeStorageRemove = chromeStorageRemove;
-  globalThis.saveLastPlan = saveLastPlan;
-  globalThis.saveLastReport = saveLastReport;
-  globalThis.normalizePath = normalizePath;
-  globalThis.pathWithinScope = pathWithinScope;
-  globalThis.debugLog = debugLog;
-}
+  globalScope.LAST_PLAN_STORAGE_NAME = protocol.STORAGE_KEYS.LAST_PLAN;
+  globalScope.LAST_REPORT_STORAGE_NAME = protocol.STORAGE_KEYS.LAST_REPORT;
+  globalScope.ACTIVE_JOB_STORAGE_NAME = protocol.STORAGE_KEYS.ACTIVE_JOB;
+  globalScope.UNDO_LOG_STORAGE_NAME = protocol.STORAGE_KEYS.UNDO_LOG;
+  globalScope.chromeStorageSet = storage.set;
+  globalScope.chromeStorageGet = storage.get;
+  globalScope.chromeStorageRemove = storage.remove;
+  globalScope.saveLastPlan = storage.saveLastPlan;
+  globalScope.saveLastReport = storage.saveLastReport;
+  globalScope.normalizePath = paths.normalizePath;
+  globalScope.pathWithinScope = paths.pathWithinScope;
+})(globalThis);

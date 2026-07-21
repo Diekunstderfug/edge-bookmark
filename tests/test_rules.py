@@ -77,6 +77,7 @@ class RulesTest(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
+                timeout=15,
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("missing required top-level key", result.stderr)

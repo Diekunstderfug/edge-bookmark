@@ -1,43 +1,27 @@
-/* global EXECUTABLE_ACTIONS, EXECUTABLE_STATUSES */
+/* global BookmarkAdvisor */
 
 (function attachBookmarkPlanLint(globalScope) {
-  const KNOWN_ACTION_TYPES = new Set([...EXECUTABLE_ACTIONS, "keep_for_review"]);
-  const KNOWN_ACTION_STATUSES = new Set(["approved", "edited", "proposed", "blocked", "rejected"]);
-  const KNOWN_PLAN_KEYS = new Set([
-    "actions",
-    "backup_path",
-    "created_at",
-    "executor",
-    "mode",
-    "model",
-    "output_path",
-    "plan_kind",
-    "plan_version",
-    "report_path",
-    "rules_source",
-    "source",
-    "source_path",
-    "source_snapshot",
-    "summary",
+  if (
+    (!globalScope.BookmarkAdvisor || !globalScope.BookmarkAdvisor.PlanSchema) &&
+    typeof require === "function"
+  ) {
+    require("./shared/plan_schema.js");
+  }
+  const schema = globalScope.BookmarkAdvisor && globalScope.BookmarkAdvisor.PlanSchema;
+  if (!schema) {
+    throw new Error("shared/plan_schema.js must load before plan_lint.js");
+  }
+  const KNOWN_ACTION_TYPES = new Set([
+    ...schema.MUTATION_ACTION_TYPES,
+    ...schema.REPORT_ACTION_TYPES,
   ]);
-  const KNOWN_ACTION_KEYS = new Set([
-    "action_id",
-    "action_type",
-    "bookmark_id",
-    "bookmark_locator",
-    "confidence",
-    "details",
-    "duplicate_of",
-    "folder_id",
-    "folder_locator",
-    "folder_name",
-    "from_path",
-    "reason",
-    "status",
-    "target_path",
-    "to_name",
-    "to_path",
-  ]);
+  const KNOWN_ACTION_STATUSES = new Set(schema.KNOWN_ACTION_STATUSES);
+  const KNOWN_PLAN_KEYS = new Set(schema.KNOWN_PLAN_KEYS);
+  const KNOWN_ACTION_KEYS = new Set(schema.KNOWN_ACTION_KEYS);
+  const isExecutableAction = schema.isExecutableAction;
+  const isPlainObject = schema.isPlainObject;
+  const readNonEmptyString = schema.readNonEmptyString;
+  const resolveActionStatus = schema.resolveActionStatus;
 
   function parsePlanText(text) {
     try {
@@ -129,83 +113,25 @@
       validateOptionalObject(action.details, `${actionPath}.details`, errors);
 
       if (actionType) {
-        lintActionShape(actionType, action, actionPath, errors);
+        for (const issue of schema.validateActionShape(actionType, action, actionPath)) {
+          errors.push(diagnostic("error", issue.path, issue.message));
+        }
       }
 
       const status = resolveActionStatus(plan, action);
-      if (actionType === "keep_for_review" && isAgreedReviewAction(action)) {
+      // 用共享谓词分类。谓词读 action.status,而 lint 需要尊重 plan_version 默认 status
+      // (v1 → approved),故当 resolved status 与显式 status 不同时传入副本。
+      const classificationAction = status !== String(action.status || "").trim()
+        ? Object.assign({}, action, { status })
+        : action;
+      if (isExecutableAction(classificationAction)) {
         executableActions.push(action);
-      } else if (actionType === "keep_for_review" || !EXECUTABLE_STATUSES.has(status)) {
+      } else {
         reviewActions.push(action);
-      } else if (actionType && EXECUTABLE_ACTIONS.has(actionType)) {
-        executableActions.push(action);
       }
     });
 
     return buildSummary(plan.actions.length, errors, warnings, executableActions, reviewActions);
-  }
-
-  function lintActionShape(actionType, action, actionPath, errors) {
-    switch (actionType) {
-      case "rename_folder":
-        requireFolderLocator(action, actionPath, errors);
-        requireNonEmptyString(action.to_name, `${actionPath}.to_name`, errors);
-        return;
-      case "create_folder":
-        requireNonEmptyString(action.target_path, `${actionPath}.target_path`, errors);
-        return;
-      case "move_folder":
-        requireFolderLocator(action, actionPath, errors);
-        requireNonEmptyString(action.to_path, `${actionPath}.to_path`, errors);
-        return;
-      case "move_bookmark":
-        requireBookmarkLocator(action, actionPath, errors);
-        requireNonEmptyString(action.to_path, `${actionPath}.to_path`, errors);
-        return;
-      case "remove_duplicate":
-        requireBookmarkLocator(action, actionPath, errors);
-        return;
-      case "delete_empty_folder":
-        requireFolderLocator(action, actionPath, errors);
-        return;
-      case "keep_for_review":
-        return;
-      default:
-        return;
-    }
-  }
-
-  function requireBookmarkLocator(action, actionPath, errors) {
-    if (hasBookmarkLocator(action)) {
-      return;
-    }
-    errors.push(
-      diagnostic(
-        "error",
-        actionPath,
-        "Bookmark action needs bookmark_id or bookmark_locator with id/title/url.",
-      ),
-    );
-  }
-
-  function requireFolderLocator(action, actionPath, errors) {
-    if (hasFolderLocator(action)) {
-      return;
-    }
-    errors.push(
-      diagnostic(
-        "error",
-        actionPath,
-        "Folder action needs folder_id or folder_locator with id/path/name.",
-      ),
-    );
-  }
-
-  function requireNonEmptyString(value, path, errors) {
-    if (readNonEmptyString(value)) {
-      return;
-    }
-    errors.push(diagnostic("error", path, "Must be a non-empty string."));
   }
 
   function validateOptionalObject(value, path, errors) {
@@ -217,27 +143,6 @@
     }
   }
 
-  function hasBookmarkLocator(action) {
-    const locator = isPlainObject(action.bookmark_locator) ? action.bookmark_locator : {};
-    return Boolean(
-      readNonEmptyString(action.bookmark_id) ||
-        readNonEmptyString(locator.id) ||
-        readNonEmptyString(locator.url) ||
-        readNonEmptyString(locator.normalized_url) ||
-        readNonEmptyString(locator.title),
-    );
-  }
-
-  function hasFolderLocator(action) {
-    const locator = isPlainObject(action.folder_locator) ? action.folder_locator : {};
-    return Boolean(
-      readNonEmptyString(action.folder_id) ||
-        readNonEmptyString(locator.id) ||
-        readNonEmptyString(locator.path) ||
-        readNonEmptyString(locator.name),
-    );
-  }
-
   function warnUnknownKeys(objectValue, knownKeys, path, warnings) {
     for (const key of Object.keys(objectValue)) {
       if (!knownKeys.has(key)) {
@@ -246,13 +151,6 @@
         );
       }
     }
-  }
-
-  function resolveActionStatus(plan, action) {
-    if (readNonEmptyString(action.status)) {
-      return String(action.status);
-    }
-    return String(plan.plan_version) === "1" ? "approved" : "proposed";
   }
 
   function buildSummary(totalActions, errors, warnings, executableActions, reviewActions) {
@@ -273,20 +171,6 @@
 
   function diagnostic(level, path, message) {
     return { level, path, message };
-  }
-
-  function readNonEmptyString(value) {
-    return typeof value === "string" && value.trim() ? value.trim() : "";
-  }
-
-  function isAgreedReviewAction(action) {
-    return String(action.status || "") === "approved" &&
-      isPlainObject(action.details) &&
-      action.details.review_agreed === true;
-  }
-
-  function isPlainObject(value) {
-    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
   }
 
   function formatJsonParseError(text, error) {

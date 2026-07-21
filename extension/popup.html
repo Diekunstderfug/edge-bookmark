@@ -68,7 +68,7 @@
 
       .tabs {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(4, 1fr);
         gap: 6px;
         margin: 12px 0;
       }
@@ -461,31 +461,22 @@
     <h1>Bookmark Advisor</h1>
 
     <div class="tabs" role="tablist" aria-label="Bookmark Advisor sections">
-      <button id="plan-tab-btn" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="plan-tab" data-i18n="tab_plan">Plan</button>
-      <button id="settings-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="settings-tab" data-i18n="tab_llm">LLM</button>
-      <button id="preferences-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="preferences-tab" data-i18n="tab_prefs">偏好</button>
+      <button id="organize-tab-btn" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="organize-tab" data-i18n="tab_organize">Organize</button>
+      <button id="ai-service-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="ai-service-tab" data-i18n="tab_ai_service">AI Service</button>
+      <button id="strategy-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="strategy-tab" data-i18n="tab_strategy">Strategy</button>
+      <button id="diagnostics-tab-btn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="diagnostics-tab" data-i18n="tab_diagnostics">Diagnostics</button>
     </div>
 
-    <section id="plan-tab" class="tab-panel" role="tabpanel" aria-labelledby="plan-tab-btn">
+    <section id="organize-tab" class="tab-panel" role="tabpanel" aria-labelledby="organize-tab-btn">
       <div class="panel">
         <strong data-i18n="label_ai_planning">Generate organization plan</strong>
-        <div class="row">
-          <div>
-            <label for="focus-path" data-i18n="label_focus_folder">Focus folder</label>
-            <select id="focus-path">
-              <option value="" data-i18n="opt_all_bookmarks">全部书签</option>
-            </select>
-          </div>
-          <div>
-            <label for="max-actions" data-i18n="label_max_actions">Max actions</label>
-            <input id="max-actions" type="number" min="1" max="80" value="40">
-          </div>
-        </div>
+        <label for="focus-path" data-i18n="label_focus_folder">Focus folder</label>
+        <select id="focus-path">
+          <option value="" data-i18n="opt_all_bookmarks">All bookmarks</option>
+        </select>
         <label for="user-instruction" data-i18n="label_user_instruction">Organization notes</label>
         <textarea id="user-instruction" rows="2" data-i18n-placeholder="placeholder_instruction" placeholder="Describe how you want the AI to organize your bookmarks (optional)"></textarea>
         <button id="generate-ai-btn" type="button" data-i18n="btn_generate">Generate AI Plan</button>
-        <div style="height: 8px;"></div>
-        <button id="export-snapshot-btn" type="button" data-i18n="btn_export">Export Current Snapshot</button>
       </div>
 
       <div class="panel">
@@ -521,44 +512,42 @@
       <button id="download-report-btn" disabled data-i18n="btn_download_report">Download Execution Report</button>
     </section>
 
-    <section id="settings-tab" class="tab-panel" role="tabpanel" aria-labelledby="settings-tab-btn" hidden>
+    <section id="ai-service-tab" class="tab-panel" role="tabpanel" aria-labelledby="ai-service-tab-btn" hidden>
       <div class="panel">
-        <strong data-i18n="label_llm_config">OpenAI-compatible LLM</strong>
+        <strong data-i18n="label_ai_service">AI service connection</strong>
         <label for="api-base-url" data-i18n="label_api_url">API base URL</label>
         <input id="api-base-url" type="text" value="https://api.openai.com/v1" spellcheck="false">
         <p class="hint" id="endpoint-preview">Requests will use the configured provider base URL.</p>
 
-        <div class="wide-row">
-          <div>
-            <label for="api-style" data-i18n="label_endpoint_mode">Endpoint mode</label>
-            <select id="api-style">
-              <option value="auto">Auto fallback</option>
-              <option value="responses">Responses API</option>
-              <option value="chat_completions">Chat Completions</option>
-              <option value="completions">Completions</option>
-            </select>
-          </div>
-          <div>
-            <label for="model">Model</label>
-            <input id="model" type="text" value="gpt-5.4-mini" spellcheck="false">
-            <p class="hint" data-i18n="hint_model_speed">Use fast models (gpt-5.4-mini, deepseek-v4-flash, gemini-2.5-flash). Reasoning/thinking models (deepseek-v4-pro, o3) are much slower.</p>
-          </div>
-        </div>
-
         <label for="api-key" data-i18n="label_api_key">API key</label>
         <input id="api-key" type="password" autocomplete="off" placeholder="sk-..., sk-or-..., provider key">
 
-        <div class="wide-row">
-          <div>
-            <label for="request-timeout" data-i18n="label_request_timeout">Request timeout (seconds)</label>
-            <input id="request-timeout" type="number" min="10" max="300" value="120">
+        <label for="model">Model</label>
+        <input id="model" type="text" value="gpt-5.4-mini" spellcheck="false">
+        <p class="hint" data-i18n="hint_model_speed">Use fast models (gpt-5.4-mini, deepseek-v4-flash, gemini-2.5-flash). Reasoning/thinking models (deepseek-v4-pro, o3) are much slower.</p>
+
+        <details>
+          <summary data-i18n="label_advanced_connection">Advanced connection settings</summary>
+          <label for="api-style" data-i18n="label_endpoint_mode">Endpoint mode</label>
+          <select id="api-style">
+            <option value="auto">Auto fallback</option>
+            <option value="responses">Responses API</option>
+            <option value="chat_completions">Chat Completions</option>
+            <option value="completions">Completions</option>
+          </select>
+
+          <div class="wide-row">
+            <div>
+              <label for="request-timeout" data-i18n="label_request_timeout">Request timeout (seconds)</label>
+              <input id="request-timeout" type="number" min="10" max="300" value="120">
+            </div>
+            <div>
+              <label for="max-retries" data-i18n="label_max_retries">Max retries</label>
+              <input id="max-retries" type="number" min="0" max="3" value="1">
+            </div>
           </div>
-          <div>
-            <label for="max-retries" data-i18n="label_max_retries">Max retries</label>
-            <input id="max-retries" type="number" min="0" max="3" value="1">
-          </div>
-        </div>
-        <p class="hint" data-i18n="hint_timeout_max">Max 300s — MV3 service worker lifecycle limit</p>
+          <p class="hint" data-i18n="hint_timeout_max">Max 300s - MV3 service worker lifecycle limit</p>
+        </details>
 
         <div class="button-row">
           <button id="save-credentials-btn" class="secondary" type="button" data-i18n="btn_save">Save Credentials</button>
@@ -568,14 +557,15 @@
       </div>
     </section>
 
-    <section id="preferences-tab" class="tab-panel" role="tabpanel" aria-labelledby="preferences-tab-btn" hidden>
+    <section id="strategy-tab" class="tab-panel" role="tabpanel" aria-labelledby="strategy-tab-btn" hidden>
       <div class="panel">
-        <strong data-i18n="label_preferences">规划偏好</strong>
+        <strong data-i18n="label_strategy">Organization strategy</strong>
 
-        <label for="pref-lang" data-i18n="label_language">Language</label>
-        <select id="pref-lang">
-          <option value="zh">中文</option>
-          <option value="en">English</option>
+        <label for="pref-planning-style" data-i18n="label_planning_style">Planning style</label>
+        <select id="pref-planning-style">
+          <option value="balanced" data-i18n="opt_style_balanced">Balanced — reasonable moves, uncertain items stay for review</option>
+          <option value="conservative" data-i18n="opt_style_conservative">Conservative — only move very certain items</option>
+          <option value="aggressive" data-i18n="opt_style_aggressive">Aggressive — categorize as much as possible and allow new folders</option>
         </select>
 
         <label for="pref-protect-root" data-i18n="label_protect_root">顶层散书签保护</label>
@@ -584,25 +574,48 @@
           <option value="no" data-i18n="opt_protect_no">允许 — 可将根目录散书签归入子文件夹</option>
         </select>
 
+        <label for="max-actions" data-i18n="label_max_actions">Max actions</label>
+        <input id="max-actions" type="number" min="1" max="80" value="40">
+
         <label for="pref-sort-order" data-i18n="label_sort_order">整理后排序</label>
         <select id="pref-sort-order">
           <option value="none" data-i18n="opt_sort_none">不改变顺序（保持原样）</option>
           <option value="alpha-asc" data-i18n="opt_sort_asc">按标题字母升序 (A→Z)</option>
           <option value="alpha-desc" data-i18n="opt_sort_desc">按标题字母降序 (Z→A)</option>
         </select>
-
-        <label for="pref-planning-style" data-i18n="label_planning_style">规划风格</label>
-        <select id="pref-planning-style">
-          <option value="balanced" data-i18n="opt_style_balanced">均衡 — 合理移动，不确定的保留审查</option>
-          <option value="conservative" data-i18n="opt_style_conservative">保守 — 只移动非常确定的，其余保持原位</option>
-          <option value="aggressive" data-i18n="opt_style_aggressive">积极 — 尽量全部归类，允许创建新文件夹</option>
-        </select>
       </div>
     </section>
 
+    <section id="diagnostics-tab" class="tab-panel" role="tabpanel" aria-labelledby="diagnostics-tab-btn" hidden>
+      <div class="panel">
+        <strong data-i18n="label_diagnostics">Diagnostics</strong>
+
+        <label for="pref-lang" data-i18n="label_language">Language</label>
+        <select id="pref-lang">
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+        </select>
+
+        <button id="export-snapshot-btn" type="button" data-i18n="btn_export">Export Current Snapshot</button>
+        <div style="height: 8px;"></div>
+        <p class="hint" data-i18n="key_security_note">Stored keys are obfuscated using the extension ID, not strong encryption.</p>
+      </div>
+    </section>
+
+    <script src="shared/message_protocol.js"></script>
+    <script src="shared/plan_schema.js"></script>
+    <script src="shared/ai_endpoint.js"></script>
+    <script src="shared/path_utils.js"></script>
+    <script src="shared/storage.js"></script>
     <script src="action_constants.js"></script>
-    <script src="storage_helpers.js"></script>
-    <script src="plan_lint.js"></script>
-    <script src="popup.js"></script>
+  <script src="storage_helpers.js"></script>
+  <script src="plan_lint.js"></script>
+  <script src="popup/runtime_client.js"></script>
+  <script src="popup/job_state.js"></script>
+  <script src="popup/secrets.js"></script>
+  <script src="popup/settings_store.js"></script>
+  <script src="popup/i18n.js"></script>
+  <script src="popup/plan_view.js"></script>
+  <script src="popup.js"></script>
   </body>
 </html>

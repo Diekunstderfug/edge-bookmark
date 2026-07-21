@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import hashlib
 import json
 import ipaddress
@@ -221,17 +222,16 @@ def url_requires_review(url: str) -> bool:
 def diff_snapshot_documents(before: dict, after: dict) -> dict:
     before_bookmarks = _bookmark_index(before)
     after_bookmarks = _bookmark_index(after)
+    matches, removed_entries, added_entries = _match_bookmark_entries(before_bookmarks, after_bookmarks)
 
     moved = []
     unchanged = 0
-    removed = []
-    added = []
+    removed = [_bookmark_diff_row(entry["bookmark"]) for entry in removed_entries]
+    added = [_bookmark_diff_row(entry["bookmark"]) for entry in added_entries]
 
-    for key, before_item in before_bookmarks.items():
-        after_item = after_bookmarks.get(key)
-        if not after_item:
-            removed.append(_bookmark_diff_row(before_item))
-            continue
+    for before_entry, after_entry in matches:
+        before_item = before_entry["bookmark"]
+        after_item = after_entry["bookmark"]
         if before_item["folder_path"] != after_item["folder_path"]:
             moved.append(
                 {
@@ -244,10 +244,6 @@ def diff_snapshot_documents(before: dict, after: dict) -> dict:
         else:
             unchanged += 1
 
-    for key, after_item in after_bookmarks.items():
-        if key not in before_bookmarks:
-            added.append(_bookmark_diff_row(after_item))
-
     return {
         "before_created_at": before.get("created_at", ""),
         "after_created_at": after.get("created_at", ""),
@@ -258,13 +254,95 @@ def diff_snapshot_documents(before: dict, after: dict) -> dict:
     }
 
 
-def _bookmark_index(document: dict) -> dict[str, dict]:
-    index: dict[str, dict] = {}
-    for bookmark in document.get("bookmarks", []):
-        normalized_url = bookmark.get("normalized_url") or bookmark.get("url") or ""
-        key = f"{normalized_url}::{bookmark.get('title','')}"
-        index[key] = bookmark
-    return index
+def _bookmark_index(document: dict) -> list[dict]:
+    return [
+        {
+            "bookmark": bookmark,
+            "id": str(bookmark.get("id", "")),
+            "identity": _bookmark_identity(bookmark),
+            "position": position,
+        }
+        for position, bookmark in enumerate(document.get("bookmarks", []))
+    ]
+
+
+def _match_bookmark_entries(
+    before_entries: list[dict],
+    after_entries: list[dict],
+) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
+    after_by_id: dict[str, list[dict]] = defaultdict(list)
+    for after_entry in after_entries:
+        if after_entry["id"]:
+            after_by_id[after_entry["id"]].append(after_entry)
+
+    matches: list[tuple[dict, dict]] = []
+    matched_before_positions: set[int] = set()
+    matched_after_positions: set[int] = set()
+
+    for before_entry in before_entries:
+        bookmark_id = before_entry["id"]
+        if not bookmark_id:
+            continue
+        candidates = after_by_id.get(bookmark_id)
+        while candidates and candidates[0]["position"] in matched_after_positions:
+            candidates.pop(0)
+        if not candidates:
+            continue
+        after_entry = candidates.pop(0)
+        matches.append((before_entry, after_entry))
+        matched_before_positions.add(before_entry["position"])
+        matched_after_positions.add(after_entry["position"])
+
+    unmatched_after_by_identity: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for after_entry in after_entries:
+        if after_entry["position"] not in matched_after_positions:
+            unmatched_after_by_identity[after_entry["identity"]].append(after_entry)
+
+    for before_entry in before_entries:
+        if before_entry["position"] in matched_before_positions:
+            continue
+        candidates = unmatched_after_by_identity.get(before_entry["identity"], [])
+        if not candidates:
+            continue
+        after_entry = _pop_best_fallback_match(
+            candidates,
+            before_entry["bookmark"].get("folder_path", ""),
+            before_entry["id"],
+        )
+        if not after_entry:
+            continue
+        matches.append((before_entry, after_entry))
+        matched_before_positions.add(before_entry["position"])
+        matched_after_positions.add(after_entry["position"])
+
+    removed = [entry for entry in before_entries if entry["position"] not in matched_before_positions]
+    added = [entry for entry in after_entries if entry["position"] not in matched_after_positions]
+    return matches, removed, added
+
+
+def _bookmark_identity(bookmark: dict) -> tuple[str, str]:
+    normalized_url = str(bookmark.get("normalized_url") or bookmark.get("url") or "")
+    title = str(bookmark.get("title", ""))
+    return normalized_url, title
+
+
+def _pop_best_fallback_match(
+    candidates: list[dict],
+    folder_path: str,
+    before_id: str,
+) -> dict | None:
+    eligible_indexes = [
+        index
+        for index, candidate in enumerate(candidates)
+        if not (before_id and candidate["id"])
+    ]
+    if not eligible_indexes:
+        return None
+    eligible_index_set = set(eligible_indexes)
+    for index, candidate in enumerate(candidates):
+        if index in eligible_index_set and candidate["bookmark"].get("folder_path", "") == folder_path:
+            return candidates.pop(index)
+    return candidates.pop(eligible_indexes[0])
 
 
 def _bookmark_diff_row(bookmark: dict) -> dict:

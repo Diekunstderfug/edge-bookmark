@@ -7,12 +7,11 @@ AI-first Microsoft Edge bookmark organizer. The normal workflow is the Edge exte
 ## Use The Extension
 
 1. Open `edge://extensions`, enable developer mode, and load the `extension/` directory as an unpacked extension.
-2. Open the extension popup, switch to **LLM**, and set:
+2. Open the extension popup, switch to **AI Service**, and set:
    - **API base URL**: `https://api.openai.com/v1` or another OpenAI-compatible HTTPS endpoint
-   - **Endpoint mode**: `auto` for most providers
    - **Model**: `gpt-5.4-mini` by default; fast compatible models work best
    - **API key**: saved as AES-GCM ciphertext in `chrome.storage.local`
-3. Return to **Plan**, optionally pick a focus folder, then click **Generate AI Plan**.
+3. Return to **Organize**, optionally pick a focus folder, then click **Generate AI Plan**.
 4. Review actions one by one. Approve good moves, revise specific rows, or leave uncertain items pending.
 5. Click **Execute Reviewed Plan**. Execution happens in Edge via `chrome.bookmarks`, not by editing the bookmarks file.
 6. Use **Undo Last Execution** if the latest batch needs to be reversed.
@@ -20,25 +19,31 @@ AI-first Microsoft Edge bookmark organizer. The normal workflow is the Edge exte
 
 The extension has no build step and no SDK dependency. It uses raw `fetch` against OpenAI-compatible REST APIs and, in `auto` mode, tries `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`.
 
-## Adjusting Preferences
+## Adjusting Settings
 
-The popup has three tabs. Each controls different aspects of the tool:
+The popup has four sections. Each controls a different part of the workflow:
 
-**Plan tab:**
+**Organize:**
 - **Scope** — restrict planning and execution to a single folder tree. Leave empty to plan across all folders.
-- **Max actions** — cap on how many actions the LLM proposes in one request (1–80, default 40). Lower values finish faster; higher values cover more bookmarks per run.
+- **Organization notes** — optional instructions for how the AI should group bookmarks.
+- **Plan review and execution** — generate, load, revise, execute, undo, continue, and download reports.
 
-**LLM tab:**
-- **Endpoint mode** — `auto` tries multiple API formats and picks the one that works. Switch to a specific mode only if `auto` fails for your provider.
+**AI Service:**
+- **API base URL** — OpenAI or another OpenAI-compatible HTTPS endpoint.
+- **API key** — saved as AES-GCM ciphertext in `chrome.storage.local`.
 - **Model** — fast models (`gpt-5.4-mini`, `deepseek-v4-flash`, `gemini-2.5-flash`) work best. Reasoning/thinking models are much slower.
-- **Request timeout** — max wait per LLM call in seconds (10–300, default 120). MV3 caps the total at 300s.
-- **Max retries** — how many times to retry after a lint failure (0–3, default 1). Set to 0 for no retries.
+- **Advanced connection settings** — endpoint mode, request timeout, and retry count.
 
-**Preferences tab:**
-- **Language** — UI language: English or Chinese (default English).
-- **Root loose bookmark protection** — when **on** (default), bookmarks sitting directly under root folders (e.g. Favorites Bar, Other Favorites) are left in place. Switch to **off** if you want the AI to move them into subfolders.
-- **Sort order** — how bookmarks are ordered after reorganization: keep original order (default), sort by title A→Z, or Z→A.
+**Strategy:**
 - **Planning style** — how aggressive the AI is: `balanced` (default, reasonable moves, uncertain items stay for review), `conservative` (only move high-confidence items), or `aggressive` (try to categorize everything, allow new folder creation).
+- **Root loose bookmark protection** — when **on** (default), bookmarks sitting directly under root folders (e.g. Favorites Bar, Other Favorites) are left in place. Switch to **off** if you want the AI to move them into subfolders.
+- **Max actions** — cap on how many actions the LLM proposes in one request (1–80, default 40). Lower values finish faster; higher values cover more bookmarks per run.
+- **Sort order** — how bookmarks are ordered after reorganization: keep original order (default), sort by title A→Z, or Z→A.
+
+**Diagnostics:**
+- **Language** — UI language: English or Chinese (default English).
+- **Export snapshot** — download the current bookmark tree for backup or offline checks.
+- **Security note** — review the local key-storage warning.
 
 ## What Is Safe By Design
 

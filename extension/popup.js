@@ -1,287 +1,94 @@
+if (
+  (!globalThis.BookmarkAdvisor || !globalThis.BookmarkAdvisor.AIEndpoint) &&
+  typeof require === "function"
+) {
+  require("./shared/ai_endpoint.js");
+}
+if (typeof require === "function") {
+  const popupModules = globalThis.BookmarkAdvisor.Popup || {};
+  if (!popupModules.RuntimeClient) require("./popup/runtime_client.js");
+  if (!popupModules.JobState) require("./popup/job_state.js");
+  if (!popupModules.Secrets) require("./popup/secrets.js");
+  if (!popupModules.SettingsStore) require("./popup/settings_store.js");
+  if (!popupModules.I18n) require("./popup/i18n.js");
+  if (!popupModules.PlanView) require("./popup/plan_view.js");
+}
+
+const POPUP_PROTOCOL = globalThis.BookmarkAdvisor.Protocol;
+const POPUP_ENDPOINT = globalThis.BookmarkAdvisor.AIEndpoint;
+const POPUP_MESSAGES = POPUP_PROTOCOL.MESSAGE_TYPES;
+const POPUP_JOB_TYPES = POPUP_PROTOCOL.JOB_TYPES;
+const POPUP_JOB_STATUSES = POPUP_PROTOCOL.JOB_STATUSES;
+const POPUP_RUNTIME_CLIENT = globalThis.BookmarkAdvisor.Popup.RuntimeClient.create({
+  chrome,
+  protocol: POPUP_PROTOCOL,
+});
+const POPUP_SECRETS = globalThis.BookmarkAdvisor.Popup.Secrets.create({
+  chrome,
+  crypto: globalThis.crypto,
+  protocol: POPUP_PROTOCOL,
+});
+const POPUP_SETTINGS_STORE = globalThis.BookmarkAdvisor.Popup.SettingsStore.create({
+  chrome,
+  protocol: POPUP_PROTOCOL,
+  aiEndpoint: POPUP_ENDPOINT,
+});
+const POPUP_I18N = globalThis.BookmarkAdvisor.Popup.I18n.create({
+  document,
+});
+
 let loadedPlan = null;
 let loadedSummary = null;
 let lastExecutionReport = null;
 const pendingReviseNotes = new Map();
 
-const STRINGS = {
-  en: {
-    tab_plan: "Plan",
-    tab_llm: "LLM",
-    tab_prefs: "Preferences",
-    label_ai_planning: "Generate organization plan",
-    label_focus_folder: "Scope",
-    label_user_instruction: "Organization notes",
-    label_max_actions: "Max actions",
-    btn_generate: "Generate AI Plan",
-    btn_revise: "Revise Loaded Plan",
-    btn_export: "Export Snapshot",
-    btn_execute: "Execute Reviewed Plan",
-    btn_undo: "Undo Last Execution",
-    btn_action_approve: "Approve",
-    btn_action_agree: "Agree",
-    btn_action_reject: "Reject",
-    btn_action_unreject: "Undo Reject",
-    placeholder_action_revise: "How should this change? (Enter to save)",
-    placeholder_rejection_reason: "Why rejected? (optional, Enter to save)",
-    btn_download_report: "Download Execution Report",
-    btn_continue: "Generate New Plan for Remaining",
-    btn_save: "Save",
-    btn_forget: "Forget Key",
-    label_llm_config: "OpenAI-compatible LLM",
-    label_api_url: "API base URL",
-    label_endpoint_mode: "Endpoint mode",
-    label_api_key: "API key",
-    label_request_timeout: "Request timeout (seconds)",
-    label_max_retries: "Max retries",
-    hint_model_speed: "Use fast models (gpt-5.4-mini, deepseek-v4-flash, gemini-2.5-flash). Reasoning/thinking models (deepseek-v4-pro, o3) are much slower.",
-    label_action_preview: "Action preview",
-    label_preferences: "Preferences",
-    label_language: "Language",
-    label_protect_root: "Root loose bookmark protection",
-    label_sort_order: "Post-organization sort",
-    label_planning_style: "Planning style",
-    status_no_plan: "No plan loaded.",
-    status_checking_permission: "Checking API host permission...",
-    status_exporting_bookmarks: "Exporting current bookmarks...",
-    status_planning_background: "AI planning is running in the background. You can close and reopen this popup.",
-    status_revising_exporting: "Exporting current bookmarks and revising the loaded plan...",
-    status_revision_background: "Plan revision is running in the background. You can close and reopen this popup.",
-    status_executing_plan: "Executing reviewed plan inside Edge...",
-    status_execution_background: "Plan execution is running in the background. You can close and reopen this popup.",
-    status_exporting_snapshot: "Exporting current Edge snapshot...",
-    status_snapshot_exported: "Current snapshot exported.",
-    status_restored_plan: "Restored last plan. Review before executing.",
-    status_job_running: "Background job running...",
-    status_plan_saved: "AI plan saved. Review before executing.",
-    status_undoing: "Undoing last execution...",
-    status_undone: "Undone {count} action(s).",
-    status_nothing_to_undo: "Nothing to undo.",
-    status_background_completed: "Background job completed.",
-    btn_cancel_job: "Force Stop",
-    status_cancelling: "Cancelling...",
-    status_cancelled: "Job cancelled. State reset.",
-    error_cancelled_by_user: "Background job was cancelled by user.",
-    error_sw_terminated: "Background task lost connection. The service worker was likely terminated. Click Force Stop to reset.",
-    error_need_api_base_url: "Set an HTTPS OpenAI-compatible API base URL in LLM Settings.",
-    error_need_model: "Set a model name in LLM Settings.",
-    error_need_api_key: "Paste an API key in LLM Settings, or save one encrypted locally first.",
-    error_need_loaded_plan: "Load or generate a reviewed plan before asking the LLM to revise it.",
-    error_need_revision_instruction: "Describe how the current plan should change before revising it.",
-    key_enter_api_url: "Enter an HTTPS API base URL before saving.",
-    key_enter_model: "Enter a model name before saving.",
-    key_host_denied: "Host permission denied. Allow access to the API origin when prompted, then try again.",
-    key_saved_with_key: "LLM settings saved. API key encrypted locally and cached for this popup.",
-    key_saved_existing_key: "LLM settings saved. Existing encrypted API key kept.",
-    key_saved_need_key: "LLM settings saved. Paste an API key and save again when ready.",
-    key_removed: "Saved encrypted API key removed. LLM endpoint settings were kept.",
-    key_loaded: "Encrypted API key loaded for this request.",
-    key_draft_restored: "Encrypted draft API key restored for this request.",
-    key_no_key: "No usable encrypted API key found. Paste one in Settings.",
-    key_old_migration: "Older passphrase-protected key found. Paste the key and save again to migrate.",
-    key_saved: "Encrypted API key saved locally. No unlock password is required.",
-    key_draft_available: "Encrypted API key draft restored. Click Save Credentials to make it the active key.",
-    key_none: "No encrypted API key saved.",
-    stat_total: "Total",
-    stat_executable: "Executable",
-    stat_review: "Review",
-    stat_errors: "Errors",
-    stat_warnings: "Warnings",
-    stat_rejected: "Rejected",
-    opt_all_bookmarks: "All bookmarks",
-    opt_protect_yes: "Protected — do not auto-move root loose bookmarks",
-    opt_protect_no: "Allowed — may move root loose bookmarks into subfolders",
-    opt_sort_none: "No sorting (keep original order)",
-    opt_sort_asc: "Alphabetical (A\u2192Z)",
-    opt_sort_desc: "Reverse alphabetical (Z\u2192A)",
-    opt_style_balanced: "Balanced — reasonable moves, uncertain items for review",
-    opt_style_conservative: "Conservative — only highly confident moves",
-    opt_style_aggressive: "Aggressive — organize everything, allow new folders",
-    placeholder_instruction: "Example: keep work folders untouched; move React and JS docs into Programming; leave uncertain items for review.",
-    cat_review: "Needs review",
-    cat_review_hint: "Requires manual confirmation",
-    cat_rejected: "Rejected",
-    cat_rejected_hint: "Skipped in this round",
-    action_move: "Move",
-    action_rename: "Rename",
-    action_create: "Create",
-    action_dedup: "Dedup",
-    action_delete_empty_folder: "Delete empty",
-    action_review: "Review",
-    action_review_item: "Review item",
-    confidence_high: "High confidence",
-    confidence_medium: "Medium confidence",
-    confidence_low: "Low confidence",
-    lint_failed: "Plan failed lint with {n} error(s).",
-    lint_warnings: "Plan passed lint with {n} warning(s).",
-    lint_ok: "Reviewed plan validated. Approved actions can now run.",
-    execution_applied: "Execution complete. Applied {n} actions.",
-    execution_failures: "Execution complete with {n} failures.",
-    execution_succeeded: "Succeeded:",
-    execution_failed: "Failed:",
-  },
-  zh: {
-    tab_plan: "\u8ba1\u5212",
-    tab_llm: "LLM",
-    tab_prefs: "\u504f\u597d",
-    label_ai_planning: "生成整理计划",
-    label_focus_folder: "整理范围",
-    label_user_instruction: "整理要求",
-    label_max_actions: "最多操作数",
-    btn_generate: "\u751f\u6210 AI \u8ba1\u5212",
-    btn_revise: "按要求修改计划",
-    btn_export: "导出书签快照",
-    btn_execute: "执行整理计划",
-    btn_undo: "撤销上次执行",
-    btn_action_approve: "通过",
-    btn_action_agree: "同意",
-    btn_action_reject: "拒绝",
-    btn_action_unreject: "撤销拒绝",
-    placeholder_action_revise: "这条怎么改？（回车保存）",
-    placeholder_rejection_reason: "拒绝理由（可选，回车保存）",
-    btn_download_report: "\u4e0b\u8f7d\u6267\u884c\u62a5\u544a",
-    btn_continue: "\u4e3a\u5269\u4f59\u9879\u751f\u6210\u65b0\u8ba1\u5212",
-    btn_save: "\u4fdd\u5b58",
-    btn_forget: "\u5220\u9664\u5bc6\u94a5",
-    label_llm_config: "模型设置",
-    label_api_url: "API 地址",
-    label_endpoint_mode: "\u7aef\u70b9\u6a21\u5f0f",
-    label_api_key: "API \u5bc6\u94a5",
-    label_request_timeout: "\u8bf7\u6c42\u8d85\u65f6\uff08\u79d2\uff09",
-    label_max_retries: "\u6700\u5927\u91cd\u8bd5\u6b21\u6570",
-    hint_model_speed: "\u63a8\u8350\u5feb\u901f\u6a21\u578b\uff08gpt-5.4-mini\u3001deepseek-v4-flash\u3001gemini-2.5-flash\uff09\u3002\u63a8\u7406/\u601d\u8003\u6a21\u578b\uff08deepseek-v4-pro\u3001o3\uff09\u4f1a\u6162\u5f88\u591a\u3002",
-    label_action_preview: "整理预览",
-    label_preferences: "\u504f\u597d\u8bbe\u7f6e",
-    label_language: "\u8bed\u8a00",
-    label_protect_root: "\u9876\u5c42\u6563\u4e66\u7b7e\u4fdd\u62a4",
-    label_sort_order: "\u6574\u7406\u540e\u6392\u5e8f",
-    label_planning_style: "\u89c4\u5212\u98ce\u683c",
-    status_no_plan: "还没有计划。",
-    status_checking_permission: "\u6b63\u5728\u68c0\u67e5 API \u4e3b\u673a\u6743\u9650...",
-    status_exporting_bookmarks: "\u6b63\u5728\u5bfc\u51fa\u5f53\u524d\u4e66\u7b7e...",
-    status_planning_background: "正在后台生成计划，关闭弹窗也可以。",
-    status_revising_exporting: "\u6b63\u5728\u5bfc\u51fa\u5f53\u524d\u4e66\u7b7e\u5e76\u4fee\u6539\u5df2\u52a0\u8f7d\u7684\u8ba1\u5212...",
-    status_revision_background: "正在后台修改计划，关闭弹窗也可以。",
-    status_executing_plan: "\u6b63\u5728 Edge \u4e2d\u6267\u884c\u5df2\u5ba1\u67e5\u7684\u8ba1\u5212...",
-    status_execution_background: "正在后台执行计划，关闭弹窗也可以。",
-    status_exporting_snapshot: "\u6b63\u5728\u5bfc\u51fa\u5f53\u524d Edge \u5feb\u7167...",
-    status_snapshot_exported: "\u5f53\u524d\u5feb\u7167\u5df2\u5bfc\u51fa\u3002",
-    status_restored_plan: "已恢复上次计划，请先检查再执行。",
-    status_job_running: "\u540e\u53f0\u4efb\u52a1\u6b63\u5728\u8fd0\u884c...",
-    status_plan_saved: "计划已保存，请先检查再执行。",
-    status_undoing: "\u6b63\u5728\u64a4\u9500\u4e0a\u6b21\u6267\u884c...",
-    status_undone: "\u5df2\u64a4\u9500 {count} \u4e2a\u64cd\u4f5c\u3002",
-    status_nothing_to_undo: "\u6ca1\u6709\u53ef\u64a4\u9500\u7684\u64cd\u4f5c\u3002",
-    status_background_completed: "\u540e\u53f0\u4efb\u52a1\u5df2\u5b8c\u6210\u3002",
-    btn_cancel_job: "\u5f3a\u5236\u7ec8\u6b62",
-    status_cancelling: "\u6b63\u5728\u7ec8\u6b62...",
-    status_cancelled: "\u5df2\u7ec8\u6b62\uff0c\u72b6\u6001\u5df2\u91cd\u7f6e\u3002",
-    error_cancelled_by_user: "\u540e\u53f0\u4efb\u52a1\u5df2\u88ab\u7528\u6237\u53d6\u6d88\u3002",
-    error_sw_terminated: "\u540e\u53f0\u4efb\u52a1\u8fde\u63a5\u4e22\u5931\uff0cService Worker \u53ef\u80fd\u5df2\u88ab\u7ec8\u6b62\u3002\u70b9\u51fb\u5f3a\u5236\u7ec8\u6b62\u91cd\u7f6e\u3002",
-    error_need_api_base_url: "请先在模型设置里填写 HTTPS API 地址。",
-    error_need_model: "请先在模型设置里填写模型名称。",
-    error_need_api_key: "请先在模型设置里填写或保存 API 密钥。",
-    error_need_loaded_plan: "\u8bf7\u5148\u52a0\u8f7d\u6216\u751f\u6210\u5df2\u5ba1\u67e5\u7684\u8ba1\u5212\uff0c\u518d\u8ba9 LLM \u4fee\u6539\u3002",
-    error_need_revision_instruction: "\u8bf7\u5148\u63cf\u8ff0\u5f53\u524d\u8ba1\u5212\u5e94\u8be5\u5982\u4f55\u66f4\u6539\uff0c\u518d\u8fdb\u884c\u4fee\u6539\u3002",
-    key_enter_api_url: "\u8bf7\u5148\u8f93\u5165 HTTPS API \u57fa\u5730\u5740\u518d\u4fdd\u5b58\u3002",
-    key_enter_model: "\u8bf7\u5148\u8f93\u5165\u6a21\u578b\u540d\u79f0\u518d\u4fdd\u5b58\u3002",
-    key_host_denied: "\u4e3b\u673a\u6743\u9650\u88ab\u62d2\u7edd\u3002\u8bf7\u5728\u63d0\u793a\u65f6\u5141\u8bb8\u8bbf\u95ee API \u6e90\uff0c\u7136\u540e\u518d\u8bd5\u4e00\u6b21\u3002",
-    key_saved_with_key: "LLM \u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002API \u5bc6\u94a5\u5df2\u5728\u672c\u5730\u52a0\u5bc6\u5e76\u7f13\u5b58\u5230\u6b64\u5f39\u7a97\u3002",
-    key_saved_existing_key: "LLM \u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002\u5df2\u6709\u7684\u52a0\u5bc6 API \u5bc6\u94a5\u5df2\u4fdd\u7559\u3002",
-    key_saved_need_key: "LLM \u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002\u8bf7\u7c98\u8d34 API \u5bc6\u94a5\u540e\u518d\u4fdd\u5b58\u3002",
-    key_removed: "\u5df2\u5220\u9664\u4fdd\u5b58\u7684 API \u5bc6\u94a5\uff0cLLM \u7aef\u70b9\u8bbe\u7f6e\u5df2\u4fdd\u7559\u3002",
-    key_loaded: "\u5df2\u4e3a\u672c\u6b21\u8bf7\u6c42\u52a0\u8f7d\u52a0\u5bc6 API \u5bc6\u94a5\u3002",
-    key_draft_restored: "\u5df2\u6062\u590d\u52a0\u5bc6\u8349\u7a3f API \u5bc6\u94a5\uff0c\u53ef\u4f9b\u672c\u6b21\u8bf7\u6c42\u4f7f\u7528\u3002",
-    key_no_key: "\u672a\u627e\u5230\u53ef\u7528\u7684\u52a0\u5bc6 API \u5bc6\u94a5\uff0c\u8bf7\u5728\u8bbe\u7f6e\u91cc\u7c98\u8d34\u4e00\u4e2a\u3002",
-    key_old_migration: "\u627e\u5230\u8f83\u65e7\u7684\u53e3\u4ee4\u77ed\u8bed\u52a0\u5bc6\u5bc6\u94a5\uff0c\u8bf7\u7c98\u8d34\u5bc6\u94a5\u540e\u91cd\u65b0\u4fdd\u5b58\u4ee5\u8fc1\u79fb\u3002",
-    key_saved: "\u52a0\u5bc6 API \u5bc6\u94a5\u5df2\u672c\u5730\u4fdd\u5b58\uff0c\u65e0\u9700\u89e3\u9501\u53e3\u4ee4\u3002",
-    key_draft_available: "\u52a0\u5bc6 API \u5bc6\u94a5\u8349\u7a3f\u5df2\u6062\u590d\uff0c\u70b9\u51fb\u201c\u4fdd\u5b58\u201d\u4ee5\u4f7f\u5176\u6210\u4e3a\u5f53\u524d\u5bc6\u94a5\u3002",
-    key_none: "\u672a\u4fdd\u5b58\u52a0\u5bc6 API \u5bc6\u94a5\u3002",
-    stat_total: "\u603b\u8ba1",
-    stat_executable: "\u53ef\u6267\u884c",
-    stat_review: "\u5f85\u5ba1\u67e5",
-    stat_errors: "\u9519\u8bef",
-    stat_warnings: "\u8b66\u544a",
-    stat_rejected: "\u5df2\u62d2\u7edd",
-    opt_all_bookmarks: "\u5168\u90e8\u4e66\u7b7e",
-    opt_protect_yes: "\u4fdd\u62a4 \u2014 \u4e0d\u81ea\u52a8\u6574\u7406\u6839\u76ee\u5f55\u4e0b\u7684\u6563\u4e66\u7b7e",
-    opt_protect_no: "\u5141\u8bb8 \u2014 \u53ef\u5c06\u6839\u76ee\u5f55\u6563\u4e66\u7b7e\u5f52\u5165\u5b50\u6587\u4ef6\u5939",
-    opt_sort_none: "\u4e0d\u6539\u53d8\u987a\u5e8f\uff08\u4fdd\u6301\u539f\u6837\uff09",
-    opt_sort_asc: "\u6309\u6807\u9898\u5b57\u6bcd\u5347\u5e8f (A\u2192Z)",
-    opt_sort_desc: "\u6309\u6807\u9898\u5b57\u6bcd\u964d\u5e8f (Z\u2192A)",
-    opt_style_balanced: "\u5747\u8861 \u2014 \u5408\u7406\u79fb\u52a8\uff0c\u4e0d\u786e\u5b9a\u7684\u4fdd\u7559\u5ba1\u67e5",
-    opt_style_conservative: "\u4fdd\u5b88 \u2014 \u53ea\u79fb\u52a8\u975e\u5e38\u786e\u5b9a\u7684\uff0c\u5176\u4f59\u4fdd\u6301\u539f\u4f4d",
-    opt_style_aggressive: "\u79ef\u6781 \u2014 \u5c3d\u91cf\u5168\u90e8\u5f52\u7c7b\uff0c\u5141\u8bb8\u521b\u5efa\u65b0\u6587\u4ef6\u5939",
-    placeholder_instruction: "例如：工作区不要动；React/JS 文档放进编程；不确定的先保留审查。",
-    cat_review: "\u9700\u8981\u5ba1\u67e5",
-    cat_review_hint: "\u9700\u4eba\u5de5\u786e\u8ba4\u6216\u8865\u5145\u4fe1\u606f",
-    cat_rejected: "\u5df2\u62d2\u7edd",
-    cat_rejected_hint: "\u672c\u8f6e\u8df3\u8fc7",
-    action_move: "\u79fb\u52a8",
-    action_rename: "\u91cd\u547d\u540d",
-    action_create: "\u521b\u5efa",
-    action_dedup: "\u53bb\u91cd",
-    action_delete_empty_folder: "删除空文件夹",
-    action_review: "\u5ba1\u67e5",
-    action_review_item: "待审查项目",
-    confidence_high: "\u9ad8\u7f6e\u4fe1\u5ea6",
-    confidence_medium: "\u4e2d\u7b49\u7f6e\u4fe1\u5ea6",
-    confidence_low: "\u4f4e\u7f6e\u4fe1\u5ea6",
-    lint_failed: "\u8ba1\u5212\u672a\u901a\u8fc7\u68c0\u67e5\uff0c\u6709 {n} \u4e2a\u9519\u8bef\u3002",
-    lint_warnings: "\u8ba1\u5212\u5df2\u901a\u8fc7\u68c0\u67e5\uff0c\u6709 {n} \u4e2a\u8b66\u544a\u3002",
-    lint_ok: "\u8ba1\u5212\u5df2\u901a\u8fc7\u5ba1\u67e5\uff0c\u53ef\u6267\u884c\u5df2\u6279\u51c6\u7684\u64cd\u4f5c\u3002",
-    execution_applied: "\u6267\u884c\u5b8c\u6210\uff0c\u5df2\u5e94\u7528 {n} \u4e2a\u64cd\u4f5c\u3002",
-    execution_failures: "\u6267\u884c\u5b8c\u6210\uff0c\u6709 {n} \u4e2a\u5931\u8d25\u3002",
-    execution_succeeded: "\u6210\u529f:",
-    execution_failed: "\u5931\u8d25:",
-  },
-};
-
-let currentLang = "zh";
-
 function t(key) {
-  return (STRINGS[currentLang] && STRINGS[currentLang][key]) || STRINGS.en[key] || key;
+  return POPUP_I18N.t(key);
 }
 
 function applyLanguage(lang) {
-  currentLang = ["zh", "en"].includes(lang) ? lang : "zh";
-  document.querySelectorAll("[data-i18n]").forEach(function(el) {
-    var key = el.getAttribute("data-i18n");
-    if (key) el.textContent = t(key);
-  });
-  document.querySelectorAll("[data-i18n-placeholder]").forEach(function(el) {
-    var key = el.getAttribute("data-i18n-placeholder");
-    if (key) el.placeholder = t(key);
-  });
+  POPUP_I18N.applyLanguage(lang);
 }
 
-const ENCRYPTED_KEY_STORAGE_NAME = "bookmarkAdvisorOpenAIKey";
-const ENCRYPTED_KEY_DRAFT_STORAGE_NAME = "bookmarkAdvisorOpenAIKeyDraft";
-const LLM_SETTINGS_STORAGE_NAME = "bookmarkAdvisorLlmSettings";
-const UI_DRAFT_STORAGE_NAME = "bookmarkAdvisorPopupDraft";
-const PREFERENCES_STORAGE_NAME = "bookmarkAdvisorPreferences";
+const ENCRYPTED_KEY_STORAGE_NAME = POPUP_PROTOCOL.STORAGE_KEYS.ENCRYPTED_API_KEY;
+const ENCRYPTED_KEY_DRAFT_STORAGE_NAME = POPUP_PROTOCOL.STORAGE_KEYS.ENCRYPTED_API_KEY_DRAFT;
+const LLM_SETTINGS_STORAGE_NAME = POPUP_PROTOCOL.STORAGE_KEYS.LLM_SETTINGS;
+const UI_DRAFT_STORAGE_NAME = POPUP_PROTOCOL.STORAGE_KEYS.POPUP_DRAFT;
+const PREFERENCES_STORAGE_NAME = POPUP_PROTOCOL.STORAGE_KEYS.PREFERENCES;
+const PROGRESS_STORAGE_NAME = POPUP_PROTOCOL.STORAGE_KEYS.PROGRESS;
 const RUNTIME_MESSAGE_TIMEOUT_MS = 240000;
 const JOB_STALENESS_CHECK_INTERVAL_MS = 20000;
 const JOB_STALENESS_THRESHOLD_MS = 180000;
-const DEFAULT_LLM_SETTINGS = {
-  apiBaseUrl: "https://api.openai.com/v1",
-  apiStyle: "auto",
-  model: "gpt-5.4-mini",
-  requestTimeout: "180",
-};
-const DEFAULT_PREFERENCES = {
-  protectRootLooseBookmarks: "yes",
-  sortOrder: "none",
-  planningStyle: "balanced",
-  lang: "en",
-};
-const DEFAULT_UI_DRAFT = {
-  activeTab: "plan",
-  focusPath: "",
-  maxActions: "40",
-  maxRetries: "",
-};
+const DEFAULT_LLM_SETTINGS = POPUP_SETTINGS_STORE.DEFAULT_LLM_SETTINGS;
+const DEFAULT_PREFERENCES = POPUP_SETTINGS_STORE.DEFAULT_PREFERENCES;
+const DEFAULT_UI_DRAFT = POPUP_SETTINGS_STORE.DEFAULT_UI_DRAFT;
+const ACTIVE_TAB_ALIASES = POPUP_SETTINGS_STORE.ACTIVE_TAB_ALIASES;
+const ACTIVE_TABS = POPUP_SETTINGS_STORE.ACTIVE_TABS;
 const REVIEW_CATEGORY_KEY = "__review__";
 const REJECTED_CATEGORY_KEY = "__rejected__";
+const POPUP_PLAN_VIEW = globalThis.BookmarkAdvisor.Popup.PlanView.create({
+  isExecutableAction,
+  rejectedCategoryKey: REJECTED_CATEGORY_KEY,
+  reportOnlyActions: REPORT_ONLY_ACTIONS,
+  reviewCategoryKey: REVIEW_CATEGORY_KEY,
+  t,
+});
+const {
+  actionDisplayStatus,
+  actionReviewAgreed,
+  actionTitle,
+  actionTypeLabel,
+  categoryKeyForAction,
+  confidenceClass,
+  groupActionsByCategory,
+  lastSegment,
+  shouldShowQuickAgreeAction,
+  sortCategories,
+} = POPUP_PLAN_VIEW;
+
+function normalizeActiveTabName(name) {
+  return POPUP_SETTINGS_STORE.normalizeActiveTabName(name);
+}
 
 const fileInput = document.getElementById("plan-file");
 const apiKeyInput = document.getElementById("api-key");
@@ -315,12 +122,14 @@ const undoButton = document.getElementById("undo-btn");
 const cancelJobButton = document.getElementById("cancel-job-btn");
 const continueButton = document.getElementById("continue-btn");
 const spinnerEl = document.getElementById("spinner");
-const planTabButton = document.getElementById("plan-tab-btn");
-const settingsTabButton = document.getElementById("settings-tab-btn");
-const preferencesTabButton = document.getElementById("preferences-tab-btn");
-const planTab = document.getElementById("plan-tab");
-const settingsTab = document.getElementById("settings-tab");
-const preferencesTab = document.getElementById("preferences-tab");
+const organizeTabButton = document.getElementById("organize-tab-btn");
+const aiServiceTabButton = document.getElementById("ai-service-tab-btn");
+const strategyTabButton = document.getElementById("strategy-tab-btn");
+const diagnosticsTabButton = document.getElementById("diagnostics-tab-btn");
+const organizeTab = document.getElementById("organize-tab");
+const aiServiceTab = document.getElementById("ai-service-tab");
+const strategyTab = document.getElementById("strategy-tab");
+const diagnosticsTab = document.getElementById("diagnostics-tab");
 const prefProtectRoot = document.getElementById("pref-protect-root");
 const prefSortOrder = document.getElementById("pref-sort-order");
 const prefPlanningStyle = document.getElementById("pref-planning-style");
@@ -329,8 +138,15 @@ let restoringInputs = false;
 let cacheWriteInFlight = false;
 let cacheWriteQueued = false;
 let activeBackgroundJob = null;
+let currentActiveTab = DEFAULT_UI_DRAFT.activeTab;
 let _stalenessCheckIntervalId = null;
 let _pendingFocusPath = "";
+const POPUP_JOB_STATE = globalThis.BookmarkAdvisor.Popup.JobState.create({
+  protocol: POPUP_PROTOCOL,
+  storage: globalThis.BookmarkAdvisor.Storage,
+  staleMessage: () => t("error_sw_terminated"),
+  onRecord: handleJobRecord,
+});
 
 function showSpinner() { spinnerEl.hidden = false; }
 function hideSpinner() { spinnerEl.hidden = true; }
@@ -390,18 +206,27 @@ saveCredentialsButton.addEventListener("click", async () => {
       return;
     }
     await saveLlmSettings(settings);
+    // 非官方端点警告:密钥会被发往任意用户配置的 HTTPS 主机,仅在非 api.openai.com 时提示
+    let endpointWarning = "";
+    try {
+      const hostname = new URL(normalizeHttpsBaseUrl(settings.apiBaseUrl)).hostname;
+      if (hostname && hostname !== "api.openai.com") {
+        endpointWarning = " " + t("key_third_party_endpoint").replace("{host}", hostname);
+      }
+    } catch (_urlError) {
+      // URL 已在 readLlmSettingsFromInputs 校验过,这里不会失败;静默忽略
+    }
     if (apiKeyInput.value.trim()) {
       await saveEncryptedApiKey(apiKeyInput.value.trim());
       await clearEncryptedApiKeyDraft();
       requestInputCacheWrite();
-      updateKeyStorageStatus(t("key_saved_with_key"), "ok");
+      updateKeyStorageStatus(t("key_saved_with_key") + endpointWarning, endpointWarning ? "warning" : "ok");
     } else {
       const savedKey = await chromeStorageGet(ENCRYPTED_KEY_STORAGE_NAME);
+      const baseMsg = savedKey ? t("key_saved_existing_key") : t("key_saved_need_key");
       updateKeyStorageStatus(
-        savedKey
-          ? t("key_saved_existing_key")
-          : t("key_saved_need_key"),
-        savedKey ? "ok" : "warning",
+        baseMsg + endpointWarning,
+        savedKey && !endpointWarning ? "ok" : "warning",
       );
     }
   } catch (error) {
@@ -432,17 +257,17 @@ generateAiButton.addEventListener("click", async () => {
     settings = readLlmSettingsFromInputs();
   } catch (error) {
     renderError(error instanceof Error ? error.message : String(error));
-    showTab("settings", { persist: true });
+    showTab("ai-service", { persist: true });
     return;
   }
   if (!settings.apiBaseUrl) {
     renderError(t("error_need_api_base_url"));
-    showTab("settings", { persist: true });
+    showTab("ai-service", { persist: true });
     return;
   }
   if (!settings.model) {
     renderError(t("error_need_model"));
-    showTab("settings", { persist: true });
+    showTab("ai-service", { persist: true });
     return;
   }
 
@@ -463,7 +288,7 @@ generateAiButton.addEventListener("click", async () => {
   }
   if (!apiKey) {
     renderError(t("error_need_api_key"));
-    showTab("settings", { persist: true });
+    showTab("ai-service", { persist: true });
     return;
   }
 
@@ -475,7 +300,7 @@ generateAiButton.addEventListener("click", async () => {
 
   function onStorageChange(changes, areaName) {
     if (areaName !== "local") return;
-    const progress = changes.bookmarkAdvisorProgress;
+    const progress = changes[PROGRESS_STORAGE_NAME];
     if (progress && progress.newValue) {
       updateStatus(progress.newValue.message || t("status_job_running"), "");
     }
@@ -489,7 +314,7 @@ generateAiButton.addEventListener("click", async () => {
     }
     updateStatus(t("status_exporting_bookmarks"), "");
     await saveLlmSettings(settings);
-    const response = await startBackgroundJobAndRender("generate-ai-plan", {
+    const response = await startBackgroundJobAndRender(POPUP_JOB_TYPES.GENERATE_AI_PLAN, {
       options: {
         apiKey,
         apiBaseUrl: settings.apiBaseUrl,
@@ -559,7 +384,7 @@ reviseAiButton.addEventListener("click", async () => {
     settings = readLlmSettingsFromInputs();
   } catch (error) {
     renderError(error instanceof Error ? error.message : String(error));
-    showTab("settings", { persist: true });
+    showTab("ai-service", { persist: true });
     return;
   }
 
@@ -580,7 +405,7 @@ reviseAiButton.addEventListener("click", async () => {
   }
   if (!apiKey) {
     renderError(t("error_need_api_key"));
-    showTab("settings", { persist: true });
+    showTab("ai-service", { persist: true });
     return;
   }
 
@@ -592,7 +417,7 @@ reviseAiButton.addEventListener("click", async () => {
 
   function onStorageChange(changes, areaName) {
     if (areaName !== "local") return;
-    const progress = changes.bookmarkAdvisorProgress;
+    const progress = changes[PROGRESS_STORAGE_NAME];
     if (progress && progress.newValue) {
       updateStatus(progress.newValue.message || t("status_job_running"), "");
     }
@@ -606,7 +431,7 @@ reviseAiButton.addEventListener("click", async () => {
     }
     updateStatus(t("status_revising_exporting"), "");
     await saveLlmSettings(settings);
-    const response = await startBackgroundJobAndRender("revise-ai-plan", {
+    const response = await startBackgroundJobAndRender(POPUP_JOB_TYPES.REVISE_AI_PLAN, {
       plan: loadedPlan,
       options: {
         apiKey,
@@ -649,7 +474,7 @@ executeButton.addEventListener("click", async () => {
 
   function onStorageChange(changes, areaName) {
     if (areaName !== "local") return;
-    const progress = changes.bookmarkAdvisorProgress;
+    const progress = changes[PROGRESS_STORAGE_NAME];
     if (progress && progress.newValue) {
       updateStatus(progress.newValue.message || t("status_job_running"), "");
     }
@@ -657,7 +482,7 @@ executeButton.addEventListener("click", async () => {
   chrome.storage.onChanged.addListener(onStorageChange);
 
   try {
-    await startBackgroundJobAndRender("apply-reviewed-plan", {
+    await startBackgroundJobAndRender(POPUP_JOB_TYPES.APPLY_REVIEWED_PLAN, {
       plan: loadedPlan,
       focusPath: document.getElementById("focus-path").value,
     });
@@ -679,7 +504,7 @@ undoButton.addEventListener("click", async () => {
   updateStatus(t("status_undoing"), "");
   showSpinner();
   try {
-    const response = await sendRuntimeMessage({ type: "undo-last-execution" });
+    const response = await sendRuntimeMessage({ type: POPUP_MESSAGES.UNDO_LAST_EXECUTION });
     if (response && response.error) {
       throw new Error(response.error);
     }
@@ -700,7 +525,7 @@ cancelJobButton.addEventListener("click", async () => {
   cancelJobButton.hidden = true;
   updateStatus(t("status_cancelling"), "");
   try {
-    await sendRuntimeMessage({ type: "cancel-active-job" });
+    await sendRuntimeMessage({ type: POPUP_MESSAGES.CANCEL_ACTIVE_JOB });
   } catch (_error) {
     // Let persisted job state settle through storage changes.
   }
@@ -717,7 +542,7 @@ exportSnapshotButton.addEventListener("click", async () => {
   showSpinner();
   try {
     const response = await sendRuntimeMessage({
-      type: "export-snapshot",
+      type: POPUP_MESSAGES.EXPORT_SNAPSHOT,
     });
     if (response && response.error) {
       throw new Error(response.error);
@@ -740,9 +565,10 @@ downloadReportButton.addEventListener("click", () => {
 });
 
 function initializeTabs() {
-  planTabButton.addEventListener("click", () => showTab("plan", { persist: true }));
-  settingsTabButton.addEventListener("click", () => showTab("settings", { persist: true }));
-  preferencesTabButton.addEventListener("click", () => showTab("preferences", { persist: true }));
+  organizeTabButton.addEventListener("click", () => showTab("organize", { persist: true }));
+  aiServiceTabButton.addEventListener("click", () => showTab("ai-service", { persist: true }));
+  strategyTabButton.addEventListener("click", () => showTab("strategy", { persist: true }));
+  diagnosticsTabButton.addEventListener("click", () => showTab("diagnostics", { persist: true }));
 }
 
 async function initializeSavedSettings() {
@@ -777,7 +603,7 @@ async function initializeSavedSettings() {
       lastExecutionReport = savedReport;
       downloadReportButton.disabled = false;
     }
-    const activeJobResponse = await sendRuntimeMessage({ type: "get-active-job" }, 5000);
+    const activeJobResponse = await sendRuntimeMessage({ type: POPUP_MESSAGES.GET_ACTIVE_JOB }, 5000);
     if (activeJobResponse && activeJobResponse.job) {
       handleJobRecord(activeJobResponse.job);
     }
@@ -790,11 +616,11 @@ async function initializeSavedSettings() {
 }
 
 function attachInputCacheHandlers() {
+  // 非 API key 字段:input/change 时写 UI 草稿快照(轻量,有合并)。
   const fields = [
     apiBaseUrlInput,
     apiStyleInput,
     modelInput,
-    apiKeyInput,
     requestTimeoutInput,
     focusPathInput,
     maxActionsInput,
@@ -815,10 +641,16 @@ function attachInputCacheHandlers() {
       requestInputCacheWrite();
     });
   }
+  // API key:不在每次按键时加密落盘(避免每个按键都做一次 AES-GCM 加密 + storage 写入,
+  // 也避免"粘贴后未点保存就关闭 popup,key 已落盘"的语义混淆)。仅在失焦/隐藏时持久化。
+  apiKeyInput.addEventListener("blur", () => {
+    void persistApiKeyDraftIfChanged();
+  });
   window.addEventListener("pagehide", () => {
     stopJobStalenessCheck();
     persistUiDraftSnapshotNow();
     void autoSaveLlmSettingsIfChanged();
+    void persistApiKeyDraftIfChanged();
     requestInputCacheWrite();
   });
   document.addEventListener("visibilitychange", () => {
@@ -826,12 +658,14 @@ function attachInputCacheHandlers() {
       stopJobStalenessCheck();
       persistUiDraftSnapshotNow();
       void autoSaveLlmSettingsIfChanged();
+      void persistApiKeyDraftIfChanged();
       requestInputCacheWrite();
     }
   });
   window.addEventListener("blur", () => {
     persistUiDraftSnapshotNow();
     void autoSaveLlmSettingsIfChanged();
+    void persistApiKeyDraftIfChanged();
     requestInputCacheWrite();
   });
 }
@@ -879,8 +713,13 @@ async function drainInputCacheWrites() {
 }
 
 async function persistInputCache() {
-  await chromeStorageSet(UI_DRAFT_STORAGE_NAME, buildUiDraftSnapshot());
+  // UI 草稿快照(非密钥字段)在按键时合并写入。API key 草稿不在此处持久化 ——
+  // 见 persistApiKeyDraftIfChanged(仅失焦/隐藏时加密落盘)。
+  await POPUP_SETTINGS_STORE.saveUiDraft(buildUiDraftSnapshot());
+}
 
+async function persistApiKeyDraftIfChanged() {
+  if (restoringInputs) return;
   const apiKeyDraft = apiKeyInput.value.trim();
   if (apiKeyDraft) {
     await saveEncryptedApiKeyDraft(apiKeyDraft);
@@ -891,8 +730,8 @@ async function persistInputCache() {
 
 function buildUiDraftSnapshot() {
   return {
-    version: 2,
-    activeTab: !planTab.hidden ? "plan" : !settingsTab.hidden ? "settings" : "preferences",
+    version: 3,
+    activeTab: currentActiveTab,
     apiBaseUrl: apiBaseUrlInput.value,
     apiStyle: apiStyleInput.value,
     model: modelInput.value,
@@ -909,23 +748,26 @@ function persistUiDraftSnapshotNow() {
   if (restoringInputs) {
     return;
   }
-  void chromeStorageSet(UI_DRAFT_STORAGE_NAME, buildUiDraftSnapshot()).catch((error) => {
+  void POPUP_SETTINGS_STORE.saveUiDraft(buildUiDraftSnapshot()).catch((error) => {
     updateKeyStorageStatus(error instanceof Error ? error.message : String(error), "error");
   });
 }
 
 function showTab(name, options = {}) {
-  const showSettings = name === "settings";
-  const showPreferences = name === "preferences";
-  planTab.hidden = showSettings || showPreferences;
-  settingsTab.hidden = !showSettings;
-  preferencesTab.hidden = !showPreferences;
-  planTabButton.classList.toggle("active", !showSettings && !showPreferences);
-  settingsTabButton.classList.toggle("active", showSettings);
-  preferencesTabButton.classList.toggle("active", showPreferences);
-  planTabButton.setAttribute("aria-selected", String(!showSettings && !showPreferences));
-  settingsTabButton.setAttribute("aria-selected", String(showSettings));
-  preferencesTabButton.setAttribute("aria-selected", String(showPreferences));
+  const activeName = normalizeActiveTabName(name);
+  currentActiveTab = activeName;
+  const tabPairs = [
+    ["organize", organizeTab, organizeTabButton],
+    ["ai-service", aiServiceTab, aiServiceTabButton],
+    ["strategy", strategyTab, strategyTabButton],
+    ["diagnostics", diagnosticsTab, diagnosticsTabButton],
+  ];
+  for (const [tabName, panel, button] of tabPairs) {
+    const selected = tabName === activeName;
+    panel.hidden = !selected;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  }
   if (options.persist) {
     persistUiDraftSnapshotNow();
     requestInputCacheWrite();
@@ -934,7 +776,7 @@ function showTab(name, options = {}) {
 
 async function loadFolderList() {
   try {
-    const response = await sendRuntimeMessage({ type: "list-folders" }, 10000);
+    const response = await sendRuntimeMessage({ type: POPUP_MESSAGES.LIST_FOLDERS }, 10000);
     if (response && response.folders) {
       populateFolderDropdown(response.folders);
     }
@@ -970,16 +812,7 @@ function populateFolderDropdown(folders) {
 }
 
 async function loadPreferences() {
-  const saved = await preferencesStorageGet();
-  if (!saved || typeof saved !== "object") {
-    return { ...DEFAULT_PREFERENCES };
-  }
-  return {
-    protectRootLooseBookmarks: ["yes", "no"].includes(saved.protectRootLooseBookmarks) ? saved.protectRootLooseBookmarks : DEFAULT_PREFERENCES.protectRootLooseBookmarks,
-    sortOrder: ["none", "alpha-asc", "alpha-desc"].includes(saved.sortOrder) ? saved.sortOrder : DEFAULT_PREFERENCES.sortOrder,
-    planningStyle: ["balanced", "conservative", "aggressive"].includes(saved.planningStyle) ? saved.planningStyle : DEFAULT_PREFERENCES.planningStyle,
-    lang: ["zh", "en"].includes(saved.lang) ? saved.lang : DEFAULT_PREFERENCES.lang,
-  };
+  return POPUP_SETTINGS_STORE.loadPreferences();
 }
 
 function applyPreferences(prefs) {
@@ -1011,7 +844,7 @@ function attachPreferenceHandlers() {
 async function persistPreferencesNow() {
   if (restoringInputs) return;
   try {
-    await preferencesStorageSet(readPreferences());
+    await POPUP_SETTINGS_STORE.savePreferences(readPreferences());
   } catch (_error) {
     // preferences persistence is best-effort
   }
@@ -1113,74 +946,6 @@ function loadPlan(plan) {
   reviseAiButton.disabled = false;
 }
 
-function groupActionsByCategory(actions) {
-  const groups = new Map();
-
-  for (const action of actions) {
-    const key = categoryKeyForAction(action);
-    if (!groups.has(key)) {
-      groups.set(key, { key, path: key, actions: [] });
-    }
-    groups.get(key).actions.push(action);
-  }
-
-  return Array.from(groups.values());
-}
-
-function categoryKeyForAction(action) {
-  const displayStatus = actionDisplayStatus(action);
-  if (displayStatus === "rejected") {
-    return REJECTED_CATEGORY_KEY;
-  }
-  if (displayStatus !== "executable") {
-    return REVIEW_CATEGORY_KEY;
-  }
-  const type = String(action.action_type || "");
-  if (type === "move_bookmark" || type === "move_folder") {
-    return String(action.to_path || "/unclassified");
-  }
-  if (type === "create_folder") {
-    return String(action.target_path || "/unclassified");
-  }
-  if (type === "rename_folder") {
-    return String(action.from_path || "/unclassified");
-  }
-  if (type === "remove_duplicate" || type === "delete_empty_folder") {
-    return String(action.from_path || "/unclassified");
-  }
-  return REVIEW_CATEGORY_KEY;
-}
-
-function sortCategories(categories) {
-  return categories.slice().sort((a, b) => {
-    const aIsRejected = a.key === REJECTED_CATEGORY_KEY;
-    const bIsRejected = b.key === REJECTED_CATEGORY_KEY;
-    if (aIsRejected && !bIsRejected) return 1;
-    if (!aIsRejected && bIsRejected) return -1;
-    const aIsReview = a.key === REVIEW_CATEGORY_KEY;
-    const bIsReview = b.key === REVIEW_CATEGORY_KEY;
-    if (aIsReview && !bIsReview) return 1;
-    if (!aIsReview && bIsReview) return -1;
-    return b.actions.length - a.actions.length;
-  });
-}
-
-function actionDisplayStatus(action) {
-  const type = String(action.action_type || "");
-  if (type === "keep_for_review") {
-    return actionReviewAgreed(action) ? "executable" : "review";
-  }
-  const status = String(action.status || "").trim();
-  if (status === "approved" || status === "edited") return "executable";
-  if (status === "blocked") return "blocked";
-  if (status === "rejected") return "rejected";
-  return "pending";
-}
-
-function shouldShowQuickAgreeAction(_action, isReviewCategory) {
-  return isReviewCategory;
-}
-
 function approveAction(action) {
   if (String(action.action_type || "") === "keep_for_review") {
     action.status = "approved";
@@ -1210,13 +975,6 @@ function unrejectAction(action) {
   }
   saveLastPlan(loadedPlan);
   loadPlan(loadedPlan);
-}
-
-function actionReviewAgreed(action) {
-  if (String(action.action_type || "") === "keep_for_review") {
-    return !!(action.details && action.details.review_agreed);
-  }
-  return actionDisplayStatus(action) === "executable";
 }
 
 function buildCategoryElement(category) {
@@ -1490,40 +1248,6 @@ function buildActionItem(action, isReviewCategory = false) {
   return item;
 }
 
-function actionTitle(action) {
-  const locator = action.bookmark_locator || {};
-  const folderLocator = action.folder_locator || {};
-  if (String(action.action_type || "") === "keep_for_review") {
-    return locator.title || folderLocator.name || String(action.reason || "") || t("action_review_item");
-  }
-  return locator.title || folderLocator.name || String(action.action_type || "");
-}
-
-function actionTypeLabel(type) {
-  switch (type) {
-    case "move_bookmark": return t("action_move");
-    case "move_folder": return t("action_move");
-    case "rename_folder": return t("action_rename");
-    case "create_folder": return t("action_create");
-    case "remove_duplicate": return t("action_dedup");
-    case "delete_empty_folder": return t("action_delete_empty_folder");
-    case "keep_for_review": return t("action_review");
-    default: return type;
-  }
-}
-
-function confidenceClass(value) {
-  if (value >= 0.85) return "high";
-  if (value >= 0.5) return "medium";
-  return "low";
-}
-
-function lastSegment(path) {
-  if (!path || path === REVIEW_CATEGORY_KEY) return path || "";
-  const parts = path.replace(/\/+$/, "").split("/");
-  return parts[parts.length - 1] || "/";
-}
-
 function renderExecutionResult(report) {
   const failures = report.failures || [];
   const succeeded = report.succeeded || [];
@@ -1567,52 +1291,27 @@ function renderError(message) {
 }
 
 function sendRuntimeMessage(payload, timeoutMs = RUNTIME_MESSAGE_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error("Extension background task timed out. Reload the extension and check that Bookmark permission is enabled."));
-    }, timeoutMs);
-    chrome.runtime.sendMessage(payload, (response) => {
-      clearTimeout(timeoutId);
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve(response);
-    });
-  });
+  return POPUP_RUNTIME_CLIENT.send(payload, timeoutMs);
 }
 
 async function startBackgroundJobAndRender(jobType, payload) {
-  const response = await sendRuntimeMessage({
-    type: "start-background-job",
-    job_type: jobType,
-    payload,
-  }, 10000);
-  if (response && response.error) {
-    throw new Error(response.error);
-  }
-  if (!response || !response.job) {
-    throw new Error("Background executor did not return a job record.");
-  }
+  const response = await POPUP_RUNTIME_CLIENT.startJob(jobType, payload);
   handleJobRecord(response.job);
   return response;
 }
 
 function handleBackgroundJobStorageChange(changes, areaName) {
-  if (areaName !== "local") return;
-  const activeJob = changes[ACTIVE_JOB_STORAGE_NAME];
-  if (activeJob && activeJob.newValue) {
-    handleJobRecord(activeJob.newValue);
-  }
+  return POPUP_JOB_STATE.handleStorageChange(changes, areaName);
 }
 
 function handleJobRecord(job) {
   activeBackgroundJob = job || null;
+  POPUP_JOB_STATE.observe(job);
   if (!job) {
     stopJobStalenessCheck();
     return;
   }
-  if (job.status === "running") {
+  if (job.status === POPUP_JOB_STATUSES.RUNNING) {
     startJobStalenessCheck();
     generateAiButton.disabled = true;
     reviseAiButton.disabled = true;
@@ -1622,17 +1321,17 @@ function handleJobRecord(job) {
     let statusText = job.progress || t("status_job_running");
     if (job.stage) {
       const stageLabel = {
-        export: "导出",
-        llm: "LLM",
-        save: "保存",
-        finalize: "整理",
+        export: t("stage_export"),
+        llm: t("stage_llm"),
+        save: t("stage_save"),
+        finalize: t("stage_finalize"),
       }[job.stage] || job.stage;
       statusText = `[${stageLabel}] ${statusText}`;
     }
     updateStatus(statusText, "");
     return;
   }
-  if (job.status === "succeeded") {
+  if (job.status === POPUP_JOB_STATUSES.SUCCEEDED) {
     stopJobStalenessCheck();
     hideSpinner();
     cancelJobButton.hidden = true;
@@ -1651,7 +1350,7 @@ function handleJobRecord(job) {
     updateStatus(job.progress || t("status_background_completed"), "ok");
     return;
   }
-  if (job.status === "failed") {
+  if (job.status === POPUP_JOB_STATUSES.FAILED) {
     stopJobStalenessCheck();
     hideSpinner();
     const cancelledByUser = isCancelledJobMessage(job.error) || isCancelledJobMessage(job.progress);
@@ -1668,60 +1367,19 @@ function isCancelledJobMessage(message) {
 }
 
 function isActiveJobRunning() {
-  return !!activeBackgroundJob && activeBackgroundJob.status === "running";
+  return POPUP_JOB_STATE.isRunning();
 }
 
 function startJobStalenessCheck() {
-  if (_stalenessCheckIntervalId !== null) {
-    return;
-  }
-  _stalenessCheckIntervalId = setInterval(() => {
-    void checkJobStaleness();
-  }, JOB_STALENESS_CHECK_INTERVAL_MS);
-  void checkJobStaleness();
+  return POPUP_JOB_STATE.start();
 }
 
 function stopJobStalenessCheck() {
-  if (_stalenessCheckIntervalId !== null) {
-    clearInterval(_stalenessCheckIntervalId);
-    _stalenessCheckIntervalId = null;
-  }
+  return POPUP_JOB_STATE.stop();
 }
 
 async function checkJobStaleness() {
-  if (!isActiveJobRunning()) {
-    stopJobStalenessCheck();
-    return;
-  }
-  let storedJob;
-  try {
-    storedJob = await chromeStorageGet(ACTIVE_JOB_STORAGE_NAME);
-  } catch (_error) {
-    return;
-  }
-  if (!isActiveJobRunning()) {
-    stopJobStalenessCheck();
-    return;
-  }
-  if (!storedJob || storedJob.status !== "running") {
-    stopJobStalenessCheck();
-    return;
-  }
-  const timestamps = [storedJob.updated_at, storedJob.started_at]
-    .map((value) => Date.parse(value))
-    .filter((value) => Number.isFinite(value));
-  if (timestamps.length === 0 || Date.now() - Math.max(...timestamps) > JOB_STALENESS_THRESHOLD_MS) {
-    const now = new Date().toISOString();
-    handleJobRecord({
-      ...storedJob,
-      status: "failed",
-      recoverable: true,
-      error: t("error_sw_terminated"),
-      progress: t("error_sw_terminated"),
-      updated_at: now,
-      finished_at: now,
-    });
-  }
+  return POPUP_JOB_STATE.check();
 }
 
 function downloadJson(payload, filename) {
@@ -1761,32 +1419,11 @@ async function refreshSavedKeyStatus() {
 }
 
 async function loadLlmSettings() {
-  const saved = await chromeStorageGet(LLM_SETTINGS_STORAGE_NAME);
-  if (!saved || typeof saved !== "object") {
-    return { ...DEFAULT_LLM_SETTINGS };
-  }
-  return normalizeLlmSettings({
-    ...DEFAULT_LLM_SETTINGS,
-    ...saved,
-  });
+  return POPUP_SETTINGS_STORE.loadLlmSettings();
 }
 
 async function loadUiDraft() {
-  const saved = await chromeStorageGet(UI_DRAFT_STORAGE_NAME);
-  if (!saved || typeof saved !== "object") {
-    return { ...DEFAULT_UI_DRAFT };
-  }
-  return {
-    activeTab: ["plan", "settings", "preferences"].includes(saved.activeTab) ? saved.activeTab : DEFAULT_UI_DRAFT.activeTab,
-    apiBaseUrl: typeof saved.apiBaseUrl === "string" ? saved.apiBaseUrl : "",
-    apiStyle: typeof saved.apiStyle === "string" ? saved.apiStyle : "",
-    model: typeof saved.model === "string" ? saved.model : "",
-    requestTimeout: typeof saved.requestTimeout === "string" ? saved.requestTimeout : DEFAULT_LLM_SETTINGS.requestTimeout,
-    focusPath: typeof saved.focusPath === "string" ? saved.focusPath : DEFAULT_UI_DRAFT.focusPath,
-    maxActions: typeof saved.maxActions === "string" ? saved.maxActions : DEFAULT_UI_DRAFT.maxActions,
-    maxRetries: typeof saved.maxRetries === "string" ? saved.maxRetries : DEFAULT_UI_DRAFT.maxRetries,
-    userInstruction: typeof saved.userInstruction === "string" ? saved.userInstruction : "",
-  };
+  return POPUP_SETTINGS_STORE.loadUiDraft();
 }
 
 function applyUiDraft(draft) {
@@ -1806,7 +1443,7 @@ function applyUiDraft(draft) {
   if (draft.userInstruction) {
     userInstructionInput.value = draft.userInstruction;
   }
-  showTab(["plan", "settings", "preferences"].includes(draft.activeTab) ? draft.activeTab : DEFAULT_UI_DRAFT.activeTab);
+  showTab(normalizeActiveTabName(draft.activeTab));
 }
 
 async function restoreEncryptedDraftApiKey() {
@@ -1823,7 +1460,7 @@ async function restoreEncryptedDraftApiKey() {
 }
 
 async function saveLlmSettings(settings) {
-  await chromeStorageSet(LLM_SETTINGS_STORAGE_NAME, normalizeLlmSettings(settings));
+  await POPUP_SETTINGS_STORE.saveLlmSettings(settings);
 }
 
 function applyLlmSettings(settings) {
@@ -1843,80 +1480,31 @@ function readLlmSettingsFromInputs() {
 }
 
 function normalizeLlmSettings(settings) {
-  return {
-    apiBaseUrl: normalizeHttpsBaseUrl(settings.apiBaseUrl || DEFAULT_LLM_SETTINGS.apiBaseUrl),
-    apiStyle: normalizeApiStyle(settings.apiStyle || DEFAULT_LLM_SETTINGS.apiStyle),
-    model: String(settings.model || DEFAULT_LLM_SETTINGS.model).trim(),
-    requestTimeout: String(settings.requestTimeout || DEFAULT_LLM_SETTINGS.requestTimeout).trim(),
-  };
+  return POPUP_SETTINGS_STORE.normalizeLlmSettings(settings);
 }
 
 function normalizeHttpsBaseUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw) {
-    return "";
-  }
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch (_error) {
-    throw new Error("API base URL must be a valid https:// URL.");
-  }
-  if (parsed.protocol !== "https:") {
-    throw new Error("API base URL must use https://.");
-  }
-  parsed.hash = "";
-  parsed.search = "";
-  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
-  return parsed.toString().replace(/\/+$/, "");
+  return POPUP_SETTINGS_STORE.normalizeHttpsBaseUrl(value);
 }
 
 function extractOrigin(apiBaseUrl) {
-  const normalized = normalizeHttpsBaseUrl(apiBaseUrl);
-  if (!normalized) {
-    return "";
-  }
-  const parsed = new URL(normalized);
-  return parsed.origin + "/*";
+  return POPUP_SETTINGS_STORE.extractOrigin(apiBaseUrl);
 }
 
 async function checkHostPermission(origin) {
-  if (!origin || typeof chrome === "undefined" || !chrome.permissions) {
-    return false;
-  }
-  return new Promise((resolve) => {
-    chrome.permissions.contains({ origins: [origin] }, (granted) => {
-      resolve(!!granted);
-    });
-  });
+  return POPUP_SETTINGS_STORE.checkHostPermission(origin);
 }
 
 async function requestHostPermission(origin) {
-  if (!origin || typeof chrome === "undefined" || !chrome.permissions) {
-    return false;
-  }
-  return new Promise((resolve) => {
-    chrome.permissions.request({ origins: [origin] }, (granted) => {
-      resolve(!!granted);
-    });
-  });
+  return POPUP_SETTINGS_STORE.requestHostPermission(origin);
 }
 
 async function ensureHostPermission(apiBaseUrl) {
-  const origin = extractOrigin(apiBaseUrl);
-  if (!origin) {
-    return false;
-  }
-  const alreadyGranted = await checkHostPermission(origin);
-  if (alreadyGranted) {
-    return true;
-  }
-  return requestHostPermission(origin);
+  return POPUP_SETTINGS_STORE.ensureHostPermission(apiBaseUrl);
 }
 
 function normalizeApiStyle(value) {
-  const style = String(value || "").trim();
-  return ["auto", "responses", "chat_completions", "completions"].includes(style) ? style : "auto";
+  return POPUP_SETTINGS_STORE.normalizeApiStyle(value);
 }
 
 function updateEndpointPreview() {
@@ -1943,65 +1531,52 @@ function updateEndpointPreview() {
 }
 
 function coreEndpointKind(apiBaseUrl) {
-  let parsed;
-  try {
-    parsed = new URL(normalizeHttpsBaseUrl(apiBaseUrl));
-  } catch (_error) {
-    return "";
-  }
-  const pathname = parsed.pathname.replace(/\/+$/, "");
-  if (pathname.endsWith("/chat/completions")) {
-    return "chat/completions";
-  }
-  if (pathname.endsWith("/responses")) {
-    return "responses";
-  }
-  if (pathname.endsWith("/completions")) {
-    return "completions";
-  }
-  return "";
+  const kind = POPUP_ENDPOINT.endpointKind(apiBaseUrl);
+  return kind === "chat_completions" ? "chat/completions" : kind;
 }
 
 async function saveEncryptedApiKey(apiKey) {
-  await saveEncryptedSecret(ENCRYPTED_KEY_STORAGE_NAME, apiKey);
+  await POPUP_SECRETS.saveActiveKey(apiKey);
 }
 
 async function loadEncryptedApiKey() {
-  return loadEncryptedSecret(ENCRYPTED_KEY_STORAGE_NAME);
+  try {
+    return await POPUP_SECRETS.loadActiveKey();
+  } catch (error) {
+    throw localizeSecretError(error);
+  }
 }
 
 async function saveEncryptedApiKeyDraft(apiKey) {
-  const area = draftStorageArea();
-  await saveEncryptedSecret(ENCRYPTED_KEY_DRAFT_STORAGE_NAME, apiKey, area);
-  if (area !== chrome.storage.local) {
-    await chromeStorageRemove(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
-  }
+  await POPUP_SECRETS.saveDraft(apiKey);
 }
 
 async function loadEncryptedApiKeyDraft() {
   try {
-    return await loadEncryptedSecret(ENCRYPTED_KEY_DRAFT_STORAGE_NAME, draftStorageArea());
-  } catch (sessionError) {
-    try {
-      const legacyDraft = await loadEncryptedSecret(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
-      await chromeStorageRemove(ENCRYPTED_KEY_DRAFT_STORAGE_NAME);
-      await saveEncryptedApiKeyDraft(legacyDraft);
-      return legacyDraft;
-    } catch (_legacyError) {
-      throw sessionError;
-    }
+    return await POPUP_SECRETS.loadDraft();
+  } catch (error) {
+    throw localizeSecretError(error);
   }
 }
 
 async function clearEncryptedApiKeyDraft() {
-  await Promise.all([
-    chromeStorageRemove(ENCRYPTED_KEY_DRAFT_STORAGE_NAME).catch(() => {}),
-    chromeStorageRemoveFromArea(draftStorageArea(), ENCRYPTED_KEY_DRAFT_STORAGE_NAME).catch(() => {}),
-  ]);
+  await POPUP_SECRETS.clearDraft();
 }
 
 function draftStorageArea() {
-  return chrome.storage && chrome.storage.session ? chrome.storage.session : chrome.storage.local;
+  return POPUP_SECRETS.draftStorageArea();
+}
+
+function localizeSecretError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const secrets = globalThis.BookmarkAdvisor.Popup.Secrets;
+  if (message === secrets.NO_KEY_MESSAGE) {
+    return new Error(t("key_no_key"));
+  }
+  if (message === secrets.OLD_KEY_MESSAGE) {
+    return new Error(t("key_old_migration"));
+  }
+  return error instanceof Error ? error : new Error(message);
 }
 
 async function saveEncryptedSecret(storageName, value, area = chrome.storage.local) {
@@ -2090,18 +1665,6 @@ function chromeStorageSetFromArea(area, key, value) {
 function chromeStorageRemoveFromArea(area, key) {
   return new Promise((resolve, reject) => {
     area.remove(key, () => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
-function chromeStorageRemove(key) {
-  return new Promise((resolve, reject) => {
-    chrome.storage.local.remove(key, () => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;

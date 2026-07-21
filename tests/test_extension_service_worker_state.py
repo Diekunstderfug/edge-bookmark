@@ -16,14 +16,27 @@ _SERVICE_WORKER = _REPO_ROOT / "extension" / "service_worker.js"
 @unittest.skipUnless(shutil.which("node"), "node is required for extension JS service worker tests")
 class ExtensionServiceWorkerStateTest(unittest.TestCase):
     def _node_script(self, body: str) -> object:
-        completed = subprocess.run(
-            ["node", "-e", body],
-            check=True,
-            capture_output=True,
-            text=True,
-            cwd=_REPO_ROOT,
-            timeout=15,
-        )
+        try:
+            completed = subprocess.run(
+                ["node", "-e", body],
+                check=True,
+                capture_output=True,
+                text=True,
+                cwd=_REPO_ROOT,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.fail(
+                "Node service-worker test timed out after 15 seconds.\n"
+                f"stdout:\n{exc.stdout or ''}\n"
+                f"stderr:\n{exc.stderr or ''}"
+            )
+        except subprocess.CalledProcessError as exc:
+            self.fail(
+                f"Node service-worker test failed with exit code {exc.returncode}.\n"
+                f"stdout:\n{exc.stdout or ''}\n"
+                f"stderr:\n{exc.stderr or ''}"
+            )
         return cast(object, json.loads(completed.stdout))
 
     def test_generate_ai_plan_persists_result_outside_popup(self):
@@ -484,7 +497,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertTrue(str(result["startedAt"]))
         self.assertTrue(str(result["finishedAt"]))
 
-    def test_startup_cleanup_leaves_fresh_running_job_untouched(self):
+    def test_startup_cleanup_fails_fresh_non_llm_running_job(self):
         script = f"""
         const path = require('path');
         const repoRoot = {json.dumps(str(_REPO_ROOT))};
@@ -517,11 +530,76 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         }}, 25);
         """
         result = cast(dict[str, object], self._node_script(script))
-        self.assertEqual(result["status"], "running")
-        self.assertNotEqual(result.get("progress"), "Service worker restarted. Background job was interrupted.")
-        self.assertIsNone(result.get("error"))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result.get("progress"), "Service worker restarted. Background job was interrupted.")
+        self.assertEqual(result.get("error"), "Service worker restarted. Background job was interrupted.")
         self.assertTrue(str(result["startedAt"]))
         self.assertTrue(str(result["updatedAt"]))
+
+    def test_alarm_tick_fails_orphan_job_that_exceeded_stale_threshold(self):
+        # P2-#8:alarm 心跳应驱动孤儿任务 stale 回收。
+        # 场景:原 SW 死亡(owner_run_id 不匹配),任务 updated_at 超过 stale 阈值,
+        # popup 已关闭。alarm 触发时应 failJob,而非永远卡在 running。
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const staleUpdatedAt = new Date(Date.now() - (35 * 60 * 1000)).toISOString();
+        const storage = {{ bookmarkAdvisorActiveJob: {{
+          id: 'job-orphan', type: 'generate-ai-plan', status: 'running',
+          owner_run_id: 'sw-dead-instance-123',
+          started_at: staleUpdatedAt, updated_at: staleUpdatedAt
+        }} }};
+        let alarmListener = null;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: () => {{}} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: (cb) => {{ alarmListener = cb; }} }} }},
+          bookmarks: {{ getTree: () => {{ throw new Error('alarm tick should not touch bookmarks'); }} }}
+        }};
+        require(serviceWorkerPath);
+        (async () => {{
+          // 等启动清理完成
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          // 重置为 running 孤儿状态(启动清理可能已处理,重新设置以测试 alarm 路径)
+          storage.bookmarkAdvisorActiveJob = {{
+            id: 'job-orphan', type: 'generate-ai-plan', status: 'running',
+            owner_run_id: 'sw-dead-instance-123',
+            started_at: staleUpdatedAt, updated_at: staleUpdatedAt
+          }};
+          // 手动触发 alarm 回调,模拟 chrome.alarms 唤醒。
+          // 注意:onAlarm 回调内部用 void (async()=>...)() 启动异步 IIFE,不返回 Promise,
+          // 所以这里触发后需轮询等待 failJob 异步完成。
+          if (alarmListener) {{
+            alarmListener({{ name: 'bookmarkAdvisorJobKeepalive' }});
+          }}
+          // 轮询等待 status 变为 failed(failJob 是异步写入 storage)
+          const deadline = Date.now() + 1000;
+          while (Date.now() < deadline && storage.bookmarkAdvisorActiveJob.status === 'running') {{
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }}
+          console.log(JSON.stringify({{
+            status: storage.bookmarkAdvisorActiveJob.status,
+            error: storage.bookmarkAdvisorActiveJob.error
+          }}));
+        }})().catch((error) => {{
+          console.error(error && error.stack ? error.stack : error);
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["status"], "failed", "alarm tick must fail stale orphan job")
+        # 错误信息应反映 stale 回收
+        error = str(result.get("error", ""))
+        self.assertTrue("stale" in error.lower() or "stopped responding" in error.lower(),
+                        f"error should mention stale: {error}")
 
     def test_startup_cleanup_fails_fresh_llm_running_job_when_offscreen_ping_fails(self):
         script = f"""
@@ -790,6 +868,9 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         }}).then((cancelResponse) => {{
           return startPromise.then((response) => ({{ response, cancelResponse }}));
         }}).then((pair) => {{
+          return waitFor(() => storage.bookmarkAdvisorActiveJob && storage.bookmarkAdvisorActiveJob.status !== 'running')
+            .then(() => pair);
+        }}).then((pair) => {{
           console.log(JSON.stringify({{
             responseStatus: pair.response.job.status,
             cancelResponse: pair.cancelResponse,
@@ -805,7 +886,7 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         }});
         """
         result = cast(dict[str, object], self._node_script(script))
-        self.assertEqual(result["responseStatus"], "failed")
+        self.assertEqual(result["responseStatus"], "running")
         self.assertEqual(result["cancelResponse"], {"cancelled": True})
         self.assertEqual(result["finalStatus"], "failed")
         self.assertEqual(result["finalProgress"], "Cancelled by user.")
@@ -813,7 +894,106 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertTrue(str(result["cancellationRequestedAt"]))
         self.assertEqual(len(cast(list[object], result["moveCalls"])), 1)
 
-    def test_apply_background_job_response_waits_for_execution_completion(self):
+    def test_undo_is_rejected_while_apply_job_is_running(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        let firstMovePending = true;
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
+          bookmarks: {{
+            get: (id, callback) => callback({{
+              '10': [{{ id: '10', title: 'Example 1', url: 'https://example.com', parentId: '1' }}],
+              '11': [{{ id: '11', title: 'Example 2', url: 'https://example.org', parentId: '1' }}],
+              '1': [{{ id: '1', title: '收藏夹栏', parentId: '0' }}]
+            }}[id] || []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [
+              {{ id: '10', title: 'Example 1', url: 'https://example.com' }},
+              {{ id: '11', title: 'Example 2', url: 'https://example.org' }}
+            ] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{
+              moveCalls.push({{ id, parentId: opts.parentId }});
+              if (firstMovePending) {{
+                firstMovePending = false;
+                setTimeout(() => {{ if (callback) callback(); }}, 30);
+                return;
+              }}
+              if (callback) callback();
+            }}
+          }}
+        }};
+        function waitFor(predicate, deadlineMs = 1000) {{
+          const deadline = Date.now() + deadlineMs;
+          return new Promise((resolve, reject) => {{
+            function tick() {{
+              if (predicate()) {{ resolve(); return; }}
+              if (Date.now() > deadline) {{ reject(new Error('timed out waiting for condition')); return; }}
+              setTimeout(tick, 5);
+            }}
+            tick();
+          }});
+        }}
+        require(serviceWorkerPath);
+        const startPromise = new Promise((resolve, reject) => {{
+          listener({{ type: 'start-background-job', job_type: 'apply-reviewed-plan', payload: {{ plan: {{ actions: [{{
+            action_id: 'a-1',
+            action_type: 'move_bookmark',
+            status: 'approved',
+            reason: 'move one',
+            confidence: 0.9,
+            bookmark_locator: {{ id: '10', title: 'Example 1', url: 'https://example.com', normalized_url: 'https://example.com/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏',
+            to_path: '/收藏夹栏/AI'
+          }}, {{
+            action_id: 'a-2',
+            action_type: 'move_bookmark',
+            status: 'approved',
+            reason: 'move two',
+            confidence: 0.9,
+            bookmark_locator: {{ id: '11', title: 'Example 2', url: 'https://example.org', normalized_url: 'https://example.org/', folder_path: '/收藏夹栏' }},
+            from_path: '/收藏夹栏',
+            to_path: '/收藏夹栏/AI'
+          }}] }} }} }}, null, (response) => response && response.error ? reject(new Error(response.error)) : resolve(response));
+        }});
+        waitFor(() => moveCalls.length === 1).then(() => new Promise((resolve) => {{
+          listener({{ type: 'undo-last-execution' }}, null, (undoResponse) => resolve(undoResponse));
+        }})).then((undoResponse) => {{
+          return waitFor(() => storage.bookmarkAdvisorActiveJob && storage.bookmarkAdvisorActiveJob.status === 'succeeded')
+            .then(() => startPromise.then((startResponse) => ({{ startResponse, undoResponse }})));
+        }}).then((pair) => {{
+          console.log(JSON.stringify({{
+            startStatus: pair.startResponse.job.status,
+            undoError: pair.undoResponse.error,
+            finalStatus: storage.bookmarkAdvisorActiveJob.status,
+            moveCalls: moveCalls.length
+          }}));
+        }}).catch((error) => {{
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["startStatus"], "running")
+        self.assertIn("already running", str(result["undoError"]))
+        self.assertEqual(result["finalStatus"], "succeeded")
+        self.assertEqual(result["moveCalls"], 2)
+
+    def test_apply_background_job_ack_returns_before_execution_completion(self):
         script = f"""
         const path = require('path');
         const repoRoot = {json.dumps(str(_REPO_ROOT))};
@@ -871,13 +1051,34 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         setTimeout(() => {{
           if (responseSent && !moveFinished) responseBeforeMoveFinished = true;
         }}, 5);
+        function waitFor(predicate, deadlineMs = 1000) {{
+          const deadline = Date.now() + deadlineMs;
+          return new Promise((resolve, reject) => {{
+            function tick() {{
+              if (predicate()) {{ resolve(); return; }}
+              if (Date.now() > deadline) {{ reject(new Error('timed out waiting for condition')); return; }}
+              setTimeout(tick, 5);
+            }}
+            tick();
+          }});
+        }}
         responsePromise.then((response) => {{
+          const ackStatus = response.job.status;
+          const ackBeforeMoveFinished = !moveFinished;
+          return waitFor(() => storage.bookmarkAdvisorActiveJob && storage.bookmarkAdvisorActiveJob.status === 'succeeded')
+            .then(() => ({{
+              ackStatus,
+              ackBeforeMoveFinished,
+              activeJob: storage.bookmarkAdvisorActiveJob
+            }}));
+        }}).then((result) => {{
           console.log(JSON.stringify({{
-            responseStatus: response.job.status,
-            resultSucceeded: response.job.result.succeeded.length,
+            responseStatus: result.ackStatus,
+            resultSucceeded: result.activeJob.result_summary.succeeded_count,
             moveFinished,
             responseBeforeMoveFinished,
-            activeJobStatus: storage.bookmarkAdvisorActiveJob.status,
+            ackBeforeMoveFinished: result.ackBeforeMoveFinished,
+            activeJobStatus: result.activeJob.status,
             progressMessage: storage.bookmarkAdvisorProgress.message
           }}));
         }}).catch((error) => {{
@@ -886,10 +1087,11 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         }});
         """
         result = cast(dict[str, object], self._node_script(script))
-        self.assertEqual(result["responseStatus"], "succeeded")
+        self.assertEqual(result["responseStatus"], "running")
         self.assertEqual(result["resultSucceeded"], 1)
         self.assertEqual(result["moveFinished"], True)
-        self.assertEqual(result["responseBeforeMoveFinished"], False)
+        self.assertEqual(result["responseBeforeMoveFinished"], True)
+        self.assertEqual(result["ackBeforeMoveFinished"], True)
         self.assertEqual(result["activeJobStatus"], "succeeded")
         self.assertEqual(result["progressMessage"], "Execution report saved for popup restore.")
 
@@ -1249,6 +1451,67 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["failures"], 1)
         self.assertIn("outside focus scope", str(result["error"]))
 
+    def test_policy_blocks_forged_bookmark_from_path_outside_actual_focus(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        const nodes = {{
+          '10': {{ id: '10', title: 'Example', url: 'https://example.com', parentId: '3' }},
+          '3': {{ id: '3', title: 'Personal', parentId: '1' }},
+          '2': {{ id: '2', title: 'AI', parentId: '1' }},
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [
+              {{ id: '2', title: 'AI', children: [] }},
+              {{ id: '3', title: 'Personal', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}
+            ] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => callback({{ id: 'c1', title: opts.title, parentId: opts.parentId }}),
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', focusPath: '/收藏夹栏/AI', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'move_bookmark',
+          status: 'approved',
+          reason: 'move it',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/' }},
+          from_path: '/收藏夹栏/AI',
+          to_path: '/收藏夹栏/AI/Tools'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            error: response.failures[0].error,
+            moveCalls
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 0)
+        self.assertEqual(result["failures"], 1)
+        self.assertIn("move_bookmark source /收藏夹栏/Personal is outside focus scope", str(result["error"]))
+        self.assertEqual(result["moveCalls"], [])
+
     def test_policy_allows_action_within_focus_path(self):
         script = f"""
         const path = require('path');
@@ -1399,6 +1662,62 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["removeCalls"], 0)
         self.assertEqual(result["moveCalls"], [{"id": "10", "parentId": "q1"}])
 
+    def test_remove_duplicate_quarantine_resolves_english_locale_root(self):
+        # 回归测试:之前硬编码 /收藏夹栏/_Quarantine,在英文 Edge(Favorites bar)
+        # 或 Chrome(Bookmarks bar)上会抛 "Could not resolve root folder"。
+        # 现在应动态解析根节点名,无 focusPath 时也能正常 quarantine。
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        let createCalls = [];
+        const nodes = {{
+          '10': {{ id: '10', title: 'Example', url: 'https://example.com', parentId: '1' }},
+          '1': {{ id: '1', title: 'Favorites bar', parentId: '0' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: 'Favorites bar', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => {{ createCalls.push({{ title: opts.title, parentId: opts.parentId }}); callback({{ id: 'q1', title: opts.title, parentId: opts.parentId }}); }},
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        // 注意:无 focusPath —— 必须动态解析根节点名,而非依赖硬编码 /收藏夹栏
+        listener({{ type: 'apply-reviewed-plan', focusPath: '', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'remove_duplicate',
+          status: 'approved',
+          reason: 'dedupe',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/' }}
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{ succeeded: response.succeeded.length, failures: response.failures.length, createCalls, moveCalls }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 1, "should quarantine successfully on non-Chinese locale root")
+        self.assertEqual(result["failures"], 0)
+        # quarantine 文件夹应被创建,parent 应为根节点 '1'(Favorites bar)
+        create_calls = cast(list[dict[str, object]], result["createCalls"])
+        self.assertTrue(any(c.get("title") == "_Quarantine" for c in create_calls))
+        self.assertEqual(result["moveCalls"], [{"id": "10", "parentId": "q1"}])
+
     def test_remove_duplicate_outside_focus_path_is_blocked(self):
         script = f"""
         const path = require('path');
@@ -1443,6 +1762,69 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["succeeded"], 0)
         self.assertEqual(result["failures"], 1)
         self.assertIn("outside focus scope", str(result["error"]))
+        self.assertEqual(result["moveCalls"], [])
+        self.assertEqual(result["createCalls"], 0)
+
+    def test_remove_duplicate_forged_from_path_uses_actual_source_scope(self):
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const storage = {{}};
+        let listener = null;
+        let moveCalls = [];
+        let createCalls = 0;
+        const nodes = {{
+          '10': {{ id: '10', title: 'Example', url: 'https://example.com', parentId: '3' }},
+          '3': {{ id: '3', title: 'Personal', parentId: '1' }},
+          '2': {{ id: '2', title: 'AI', parentId: '1' }},
+          '1': {{ id: '1', title: '收藏夹栏', parentId: '0' }}
+        }};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          storage: {{ local: {{
+            set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
+            get: (key, callback) => callback({{ [key]: storage[key] }}),
+            remove: (_key, callback) => {{ if (callback) callback(); }}
+          }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
+          bookmarks: {{
+            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
+            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [
+              {{ id: '2', title: 'AI', children: [] }},
+              {{ id: '3', title: 'Personal', children: [{{ id: '10', title: 'Example', url: 'https://example.com' }}] }}
+            ] }}] }}]),
+            getChildren: (_id, callback) => callback([]),
+            create: (opts, callback) => {{ createCalls += 1; callback({{ id: 'q1', title: opts.title, parentId: opts.parentId }}); }},
+            move: (id, opts, callback) => {{ moveCalls.push({{ id, parentId: opts.parentId }}); if (callback) callback(); }}
+          }}
+        }};
+        require(serviceWorkerPath);
+        listener({{ type: 'apply-reviewed-plan', focusPath: '/收藏夹栏/AI', plan: {{ actions: [{{
+          action_id: 'a-1',
+          action_type: 'remove_duplicate',
+          status: 'approved',
+          reason: 'dedupe',
+          confidence: 0.9,
+          bookmark_locator: {{ id: '10', title: 'Example', url: 'https://example.com', normalized_url: 'https://example.com/' }},
+          from_path: '/收藏夹栏/AI'
+        }}] }} }}, null, (response) => {{
+          console.log(JSON.stringify({{
+            succeeded: response.succeeded.length,
+            failures: response.failures.length,
+            error: response.failures[0].error,
+            moveCalls,
+            createCalls
+          }}));
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        self.assertEqual(result["succeeded"], 0)
+        self.assertEqual(result["failures"], 1)
+        self.assertIn("remove_duplicate source /收藏夹栏/Personal is outside focus scope", str(result["error"]))
         self.assertEqual(result["moveCalls"], [])
         self.assertEqual(result["createCalls"], 0)
 
@@ -1948,6 +2330,9 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertIn("remove failed", str(result["error"]))
 
     def test_delete_empty_folder_rejects_non_empty_folder(self):
+        # P3-#9:现在用 chrome.bookmarks.remove 作为原子仲裁(消除 TOCTOU 窗口)。
+        # mock 的 remove 对非空文件夹应失败(反映真实 chrome.bookmarks 行为),
+        # 失败后再 getChildren 校验,给出明确的"非空"提示。
         script = f"""
         const path = require('path');
         const repoRoot = {json.dumps(str(_REPO_ROOT))};
@@ -1963,7 +2348,13 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
         }};
         global.chrome = {{
-          runtime: {{ id: 'test-extension', lastError: null, getURL: (file) => `chrome-extension://test/${{file}}`, onMessage: {{ addListener: (callback) => {{ listener = callback; }} }} }},
+          runtime: {{
+            id: 'test-extension',
+            // remove 对非空文件夹(id='20')设置 lastError,模拟真实 chrome.bookmarks 行为
+            lastError: null,
+            getURL: (file) => `chrome-extension://test/${{file}}`,
+            onMessage: {{ addListener: (callback) => {{ listener = callback; }} }}
+          }},
           storage: {{ local: {{
             set: (value, callback) => {{ Object.assign(storage, value); if (callback) callback(); }},
             get: (key, callback) => callback({{ [key]: storage[key] }}),
@@ -1971,10 +2362,19 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
           }} }},
           alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
           bookmarks: {{
-            get: (id, callback) => callback(nodes[id] ? [nodes[id]] : []),
-            getChildren: (id, callback) => callback(id === '20' ? [{{ id: '30', title: 'Child', url: 'https://example.com' }}] : [nodes['20']]),
-            getTree: (callback) => callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '20', title: 'Not Empty', children: [{{ id: '30', title: 'Child', url: 'https://example.com' }}] }}] }}] }}]),
-            remove: (_id, callback) => {{ removeCalls += 1; if (callback) callback(); }}
+            get: (id, callback) => {{ global.chrome.runtime.lastError = null; callback(nodes[id] ? [nodes[id]] : []); }},
+            getChildren: (id, callback) => {{ global.chrome.runtime.lastError = null; callback(id === '20' ? [{{ id: '30', title: 'Child', url: 'https://example.com' }}] : []); }},
+            getTree: (callback) => {{ global.chrome.runtime.lastError = null; callback([{{ id: '0', title: '', children: [{{ id: '1', title: '收藏夹栏', children: [{{ id: '20', title: 'Not Empty', children: [{{ id: '30', title: 'Child', url: 'https://example.com' }}] }}] }}] }}]); }},
+            remove: (id, callback) => {{
+              removeCalls += 1;
+              // 真实 chrome.bookmarks.remove 对非空文件夹会失败
+              if (id === '20') {{
+                global.chrome.runtime.lastError = {{ message: 'Cannot remove non-empty folder' }};
+              }} else {{
+                global.chrome.runtime.lastError = null;
+              }}
+              if (callback) callback();
+            }}
           }}
         }};
         require(serviceWorkerPath);
@@ -1999,7 +2399,8 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["succeeded"], 0)
         self.assertEqual(result["failures"], 1)
         self.assertIn("requires the folder to be empty", str(result["error"]))
-        self.assertEqual(result["removeCalls"], 0)
+        # remove 被调用一次(作为原子仲裁),但因非空失败
+        self.assertEqual(result["removeCalls"], 1)
 
     def test_missing_bookmark_title_does_not_trigger_broad_search(self):
         script = f"""
@@ -2621,6 +3022,126 @@ class ExtensionServiceWorkerStateTest(unittest.TestCase):
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["failures"], 1)
         self.assertEqual(result["moveCalls"], 2)
+
+    def test_offscreen_hard_timeout_stays_under_stale_threshold(self):
+        # 回归测试:offscreenHardTimeoutMs 默认曾 ≈ 61 分钟,超过 ACTIVE_JOB_STALE_MS
+        # (30 分钟),导致硬超时永远不可达、被 stale 检测静默吞掉。
+        # 现在硬超时必须 < ACTIVE_JOB_STALE_MS(留 1 分钟余量)。
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{ id: 'test-extension', lastError: null, getURL: () => '', onMessage: {{ addListener: () => {{}} }} }},
+          storage: {{ local: {{ set: () => {{}}, get: (_k, cb) => cb(Object.create(null)), remove: () => {{}} }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
+          bookmarks: {{ get: (_id, cb) => cb([]), getTree: (cb) => cb([{{ id: '0', title: '', children: [] }}]), getChildren: (_id, cb) => cb([]) }}
+        }};
+        require(serviceWorkerPath);
+        const hardTimeoutDefault = BookmarkAdvisorSW._offscreenHardTimeoutMs('plan', {{}});
+        const hardTimeoutMaxRetries = BookmarkAdvisorSW._offscreenHardTimeoutMs('plan', {{ maxRetries: 3 }});
+        const hardTimeoutLongRequest = BookmarkAdvisorSW._offscreenHardTimeoutMs('plan', {{ requestTimeoutMs: 300000, maxRetries: 3 }});
+        const staleMs = BookmarkAdvisorSW._ACTIVE_JOB_STALE_MS;
+        console.log(JSON.stringify({{ hardTimeoutDefault, hardTimeoutMaxRetries, hardTimeoutLongRequest, staleMs }}));
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        stale_ms = cast(int, result["staleMs"])
+        for key in ("hardTimeoutDefault", "hardTimeoutMaxRetries", "hardTimeoutLongRequest"):
+            value = cast(int, result[key])
+            self.assertLess(
+                value, stale_ms,
+                f"{key}={value}ms must be < ACTIVE_JOB_STALE_MS={stale_ms}ms so the hard timeout fires before stale detection",
+            )
+        # 默认参数下硬超时应是合理预算(而非被 stale 封顶后的边缘值)
+        self.assertLess(cast(int, result["hardTimeoutDefault"]), stale_ms)
+
+    def test_evict_orphan_offscreen_job_sends_cancel_when_busy_with_different_id(self):
+        # P2-#12:SW 崩溃后新实例启动任务,旧 offscreen 仍持有孤儿 jobId。
+        # evictOrphanOffscreenJob 应 ping → 发现 busy 且 jobId 不同 → 发 cancel 释放槽位。
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const sentMessages = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension', lastError: null,
+            getURL: () => '',
+            onMessage: {{ addListener: () => {{}} }},
+            sendMessage: (msg) => {{
+              sentMessages.push(msg.type);
+              if (msg.type === 'offscreen-ping') {{
+                return Promise.resolve({{ ok: true, busy: true, jobId: 'orphan-job-dead' }});
+              }}
+              if (msg.type === 'offscreen-cancel') {{
+                return Promise.resolve({{ ok: true }});
+              }}
+              return Promise.resolve({{ ok: true }});
+            }}
+          }},
+          storage: {{ local: {{ set: () => {{}}, get: (_k, cb) => cb(Object.create(null)), remove: () => {{}} }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
+          bookmarks: {{ get: (_id, cb) => cb([]), getTree: (cb) => cb([{{ id: '0', title: '', children: [] }}]), getChildren: (_id, cb) => cb([]) }}
+        }};
+        require(serviceWorkerPath);
+        (async () => {{
+          await BookmarkAdvisorSW._evictOrphanOffscreenJob('new-job-456');
+          console.log(JSON.stringify({{ sentMessages: sentMessages }}));
+        }})().catch((error) => {{
+          console.error(error && error.stack ? error.stack : error);
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        sent = cast(list[str], result["sentMessages"])
+        self.assertEqual(sent[0], "offscreen-ping")
+        self.assertIn("offscreen-cancel", sent, "must send cancel to evict orphan job")
+
+    def test_evict_orphan_offscreen_job_skips_cancel_when_idle(self):
+        # offscreen 空闲时不需驱逐
+        script = f"""
+        const path = require('path');
+        const repoRoot = {json.dumps(str(_REPO_ROOT))};
+        const serviceWorkerPath = {json.dumps(str(_SERVICE_WORKER))};
+        const sentMessages = [];
+        global.importScripts = function (...files) {{
+          for (const file of files) {{ require(path.join(repoRoot, 'extension', file)); }}
+        }};
+        global.chrome = {{
+          runtime: {{
+            id: 'test-extension', lastError: null,
+            getURL: () => '',
+            onMessage: {{ addListener: () => {{}} }},
+            sendMessage: (msg) => {{
+              sentMessages.push(msg.type);
+              if (msg.type === 'offscreen-ping') {{
+                return Promise.resolve({{ ok: true, busy: false, jobId: null }});
+              }}
+              return Promise.resolve({{ ok: true }});
+            }}
+          }},
+          storage: {{ local: {{ set: () => {{}}, get: (_k, cb) => cb(Object.create(null)), remove: () => {{}} }} }},
+          alarms: {{ create: () => {{}}, clear: () => {{}}, onAlarm: {{ addListener: () => {{}} }} }},
+          bookmarks: {{ get: (_id, cb) => cb([]), getTree: (cb) => cb([{{ id: '0', title: '', children: [] }}]), getChildren: (_id, cb) => cb([]) }}
+        }};
+        require(serviceWorkerPath);
+        (async () => {{
+          await BookmarkAdvisorSW._evictOrphanOffscreenJob('new-job-789');
+          console.log(JSON.stringify({{ sentMessages: sentMessages }}));
+        }})().catch((error) => {{
+          console.error(error && error.stack ? error.stack : error);
+          process.exit(1);
+        }});
+        """
+        result = cast(dict[str, object], self._node_script(script))
+        sent = cast(list[str], result["sentMessages"])
+        self.assertEqual(sent, ["offscreen-ping"], "must not send cancel when offscreen is idle")
 
 
 if __name__ == "__main__":
