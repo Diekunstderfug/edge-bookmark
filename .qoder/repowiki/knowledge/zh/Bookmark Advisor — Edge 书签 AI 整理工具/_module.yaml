@@ -1,0 +1,16 @@
+schema_version: 1
+module_path: ""
+title: Bookmark Advisor — Edge 书签 AI 整理工具
+scope:
+    - README.md
+    - AGENTS.md
+    - CLAUDE.md
+    - .gitignore
+    - .tmp_old_sw.txt
+    - CHANGELOG.md
+    - LICENSE
+    - README.zh-CN.md
+    - pyproject.toml
+source_files: []
+depends_on: []
+related_to: []

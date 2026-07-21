@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: extension
+title: Edge/Chrome MV3 书签计划执行扩展
+scope:
+    - extension/
+source_files: []
+depends_on: []
+related_to: []

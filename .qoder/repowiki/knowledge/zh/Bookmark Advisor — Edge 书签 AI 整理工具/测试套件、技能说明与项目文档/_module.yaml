@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: tests_and_docs
+title: 测试套件、技能说明与项目文档
+scope:
+    - tests/
+    - docs/
+    - skills/
+    - config/
+source_files: []
+depends_on: []
+related_to: []
