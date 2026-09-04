@@ -1,6 +1,6 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-05-10
+**Generated:** 2026-09-05
 **Commit:** working tree
 **Branch:** main
 
@@ -14,6 +14,10 @@ AI-first Microsoft Edge bookmark organizer. Hybrid Python CLI (snapshot export, 
 edge-bookmark/
 ├── src/bookmark_advisor/   # Python CLI package (setuptools, src-layout)
 ├── extension/              # Edge MV3 extension (vanilla JS, no build step)
+│   ├── ai/                 # AI planning modules (fast_rules, snapshot_model, batching, codecs, provider_client, plan_compiler)
+│   ├── background/         # Service-worker modules (bookmark api, tree, handlers, executor, policy, undo, snapshot, jobs, router)
+│   ├── popup/              # Popup modules (runtime_client, job_state, secrets, settings_store, i18n, plan_view)
+│   └── shared/             # Shared modules (message_protocol, plan_schema, ai_endpoint, path_utils, storage)
 ├── config/                 # rules.yaml — guardrails, category hints, relocations
 ├── skills/                 # Markdown skills for coding agents (bookmark-reorg, bookmark-url-review)
 ├── tests/                  # unittest/pytest suite for Python CLI and extension behavior
@@ -33,13 +37,13 @@ edge-bookmark/
 | Rules engine | `src/bookmark_advisor/rules.py` | YAML parsing (custom, no pyyaml dep), validation, relocation rules |
 | Snapshot I/O | `src/bookmark_advisor/snapshot_io.py` | Read/write JSON snapshots, review queues, enriched snapshots, diffing |
 | URL utilities | `src/bookmark_advisor/utils.py` | normalize_url, extract_domain, tokenize, slugify |
-| Extension popup | `extension/popup.js` + `popup.html` | UI, form persistence, AES-GCM key storage, per-action approve/revise |
-| Extension background | `extension/service_worker.js` | chrome.bookmarks API operations, plan execution, undo log, policy engine, quarantine, empty-folder cleanup |
-| Extension AI planner | `extension/ai_planner.js` | HTTPS fetch against OpenAI-compatible APIs (SDK-free), pipe-delimited prompt encoding, cached part batching, delta-only revision |
+| Extension popup | `extension/popup.js` + `popup.html` + `extension/popup/` | UI entry; popup/ modules: runtime_client, job_state, secrets, settings_store, i18n, plan_view. Form persistence, AES-GCM key storage, per-action approve/revise |
+| Extension background | `extension/background/` | chrome.bookmarks API operations, plan execution, undo log, policy engine, quarantine, empty-folder cleanup; `service_worker.js` is the thin entry that importScripts everything |
+| Extension AI planner | `extension/ai_planner.js` + `extension/ai/` | Orchestrator + ai/ modules (fast_rules, snapshot_model, batching, prompt_codec, response_codec, provider_client, plan_compiler); HTTPS fetch against OpenAI-compatible APIs (SDK-free), pipe-delimited prompt encoding, cached part batching, delta-only revision |
 | Extension offscreen runtime | `extension/offscreen.js` + `offscreen.html` | Long-running LLM fetches outside the MV3 service worker lifecycle; sends keepalive pings to the service worker |
-| Background job lifecycle | `extension/service_worker.js` | Alarm watchdog, stale detection, cooperative/hard cancel, startup cleanup, offscreen recovery, execution checkpoints |
-| Shared helpers | `extension/storage_helpers.js` | Storage constants, chrome.storage wrappers, `pathWithinScope` |
-| Action constants | `extension/action_constants.js` | `EXECUTION_ORDER`, `EXECUTABLE_ACTIONS`, `EXECUTABLE_STATUSES` shared across SW, planner, and lint |
+| Background job lifecycle | `extension/background/job_lifecycle.js` | Alarm watchdog, stale detection, cooperative/hard cancel, startup cleanup, offscreen recovery, execution checkpoints (with job_store/job_handlers/offscreen_client/message_router) |
+| Shared helpers | `extension/shared/` | Storage constants, chrome.storage wrappers, `pathWithinScope`, message protocol, plan schema, AI endpoints; `storage_helpers.js`/`action_constants.js` are legacy facades over these |
+| Action constants | `extension/shared/plan_schema.js` | `EXECUTION_ORDER`, `EXECUTABLE_ACTIONS`, `EXECUTABLE_STATUSES` shared across SW, planner, and lint |
 | Plan validation | `extension/plan_lint.js` | JSON syntax + plan-shape linting in-browser |
 | Guardrail rules | `config/rules.yaml` | Protected paths, category hints, forced relocations |
 
@@ -58,11 +62,11 @@ edge-bookmark/
 | `load_rules` | Function | `src/bookmark_advisor/rules.py:69` | YAML rules loading |
 | `build_snapshot_document` | Function | `src/bookmark_advisor/snapshot_io.py:25` | Snapshot construction from Edge JSON |
 | `analyze_snapshot` | Function | `src/bookmark_advisor/analysis.py:10` | Duplicate/clutter/empty folder detection |
-| `executeReviewedPlan` | Function | `extension/service_worker.js:1090` | Extension plan execution with undo recording and policy checks |
-| `undoLastExecution` | Function | `extension/service_worker.js:1374` | Reverses the most recent execution from the undo log |
-| `checkActionPolicy` | Function | `extension/service_worker.js:1292` | Focus-path enforcement at execution time |
-| `actionDisplayStatus` | Function | `extension/popup.js:1127` | Per-action display state (executable/pending/blocked/review) |
-| `generateReviewedPlan` | Function | `extension/ai_planner.js:82` | Extension AI plan via HTTPS |
+| `PlanExecutor.create` | Factory | `extension/background/plan_executor.js:7` | DI-wired extension plan execution with undo recording and policy checks |
+| `undoLastExecution` | Function | `extension/background/undo_log.js:90` | Reverses the most recent execution from the undo log |
+| `checkActionPolicy` | Function | `extension/background/execution_policy.js:40` | Focus-path enforcement at execution time |
+| `actionDisplayStatus` | Function | `extension/popup/plan_view.js:17` | Per-action display state (executable/pending/blocked/review) |
+| `generateReviewedPlan` | Function | `extension/ai_planner.js:76` | Extension AI plan via HTTPS (orchestrates `extension/ai/` modules) |
 
 ## CONVENTIONS
 
@@ -106,7 +110,10 @@ PYTHONPATH=src python3 -m bookmark_advisor run-job --job data/jobs/<job>/reorg-j
 # Run Python CLI tests
 PYTHONPATH=src python3 -m unittest discover -s tests
 
-# Run extension tests (requires node)
+# Run all extension tests (requires node)
+python -m pytest tests/test_extension_*.py -q
+
+# Focused extension smoke tests
 python -m pytest tests/test_extension_service_worker_state.py tests/test_extension_plan_lint.py tests/test_extension_endpoint_urls.py tests/test_extension_popup_state.py -x -q
 
 # Syntax check a plan

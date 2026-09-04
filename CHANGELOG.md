@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-07-21 — Extension module split (ai / background / popup / shared)
+
+### Extension
+
+- **Module split**: `service_worker.js`, `popup.js`, and `ai_planner.js` were split into `ai/`, `background/`, `popup/`, and `shared/` submodules. The original files remain as thin orchestrators: `service_worker.js` loads everything via `importScripts`, `popup.html` loads `popup/` modules via `<script>` tags, `offscreen.html` loads the `ai/` chain
+- **Namespace**: all modules attach frozen exports under the global `BookmarkAdvisor` namespace (`Protocol`, `PlanSchema`, `AiEndpoint`, `PathUtils`, `Storage`, `Background.*`, `AI.*`, `Popup.*`)
+- **New modules**: `shared/` (message_protocol, plan_schema, ai_endpoint, path_utils, storage); `background/` (bookmark_api, bookmark_tree, action_handlers, plan_executor, execution_policy, undo_log, snapshot_export, job_store, job_handlers, job_lifecycle, offscreen_client, message_router); `ai/` (fast_rules, snapshot_model, batching, prompt_codec, response_codec, provider_client, plan_compiler); `popup/` (runtime_client, job_state, secrets, settings_store, i18n, plan_view)
+- **Compatibility facades**: `storage_helpers.js` and `action_constants.js` remain as thin facades over `shared/storage.js`/`shared/path_utils.js` and `shared/plan_schema.js`
+- **Still no build step**: vanilla JS loaded directly — no bundler, no npm
+
+### Python
+
+- `snapshot_io.py` diffing refactored around a `_match_bookmark_entries` helper; no behavior change
+
+### Tests
+
+- 25 new extension module test files (one per split module) plus a boot-order test; entry-level suites updated to the new wiring
+
 ## 2026-05-10 — Fast models, cached batching, delta revision, MV3 keepalive
 
 ### Extension
