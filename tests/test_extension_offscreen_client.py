@@ -138,6 +138,18 @@ class ExtensionOffscreenClientTest(unittest.TestCase):
               deadlineGraceMs: 0,
               aiEndpoint: { DEFAULT_REQUEST_TIMEOUT_MS: 20, MAX_REQUEST_TIMEOUT_MS: 50 },
             });
+            const counted = factory.create({
+              chrome: { runtime: { sendMessage: async () => ({ ok: true }) } },
+              storage: { get: async () => null, remove: async () => {} },
+              activeJobStaleMs: 100,
+              staleSafetyMarginMs: 10,
+              deadlineGraceMs: 0,
+              aiEndpoint: {
+                DEFAULT_REQUEST_TIMEOUT_MS: 20,
+                MAX_REQUEST_TIMEOUT_MS: 50,
+                requestAttemptCount: () => 4,
+              },
+            });
             console.log(JSON.stringify({
               staleMs, defaultBudget, maxRetryBudget, longRequestBudget,
               reviseNested: small.hardTimeoutMs('revise', {
@@ -145,6 +157,9 @@ class ExtensionOffscreenClientTest(unittest.TestCase):
                 options: { requestTimeoutMs: 5, maxRetries: 0 },
               }),
               generateTopLevel: small.hardTimeoutMs('generate', {
+                requestTimeoutMs: 5, maxRetries: 0,
+              }),
+              attemptCounted: counted.hardTimeoutMs('generate', {
                 requestTimeoutMs: 5, maxRetries: 0,
               }),
             }));
@@ -156,6 +171,10 @@ class ExtensionOffscreenClientTest(unittest.TestCase):
         self.assertLess(result["longRequestBudget"], stale_ms)
         self.assertEqual(result["reviseNested"], 10)
         self.assertEqual(result["generateTopLevel"], 10)
+        # 4 个端点回退 × 2 × 5ms 单路径预算 = 40ms：锁定 endpointAttempts 因子。
+        self.assertEqual(result["attemptCounted"], 40)
+        # 默认 auto 风格（5 端点回退）下单路径预算远超 stale 上限，应被截断而非缩水。
+        self.assertEqual(result["defaultBudget"], stale_ms - 60 * 1000)
 
     def test_run_routes_only_matching_job_messages_and_removes_listener(self) -> None:
         result = self._node_eval(

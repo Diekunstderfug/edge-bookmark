@@ -158,7 +158,12 @@
         MAX_LINT_RETRIES,
       );
       const lintPasses = lintRetries + 1;
-      const singlePathBudget = 2 * requestTimeoutMs * lintPasses + deadlineGraceMs;
+      // 单次 offscreen 运行会走完整个端点回退链（auto 最多 5 个），预算必须乘上该因子，
+      // 否则早段端点挂起时硬超时会在任务仍正常工作时提前触发（ee24ac0 修复的回归）。
+      const endpointAttempts = typeof aiEndpoint.requestAttemptCount === "function"
+        ? Math.max(1, aiEndpoint.requestAttemptCount(llmOptions.apiStyle, llmOptions.apiBaseUrl))
+        : 1;
+      const singlePathBudget = 2 * requestTimeoutMs * lintPasses * endpointAttempts + deadlineGraceMs;
       const safetyMargin = Math.max(
         1,
         Math.min(staleSafetyMarginMs, activeJobStaleMs - 1),
