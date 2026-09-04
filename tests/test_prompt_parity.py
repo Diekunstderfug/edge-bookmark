@@ -22,12 +22,12 @@ CORE_PHRASES = [
 ]
 
 _EXTENSION_DIR = Path(__file__).resolve().parent.parent / "extension"
-_JS_PLANNER_PATH = _EXTENSION_DIR / "ai_planner.js"
+_JS_PROMPT_CODEC_PATH = _EXTENSION_DIR / "ai" / "prompt_codec.js"
 
 
 def _read_js_system_prompt_source() -> str:
     """Extract the buildSystemPrompt function body from JS source using brace counting."""
-    js_source = _JS_PLANNER_PATH.read_text(encoding="utf-8")
+    js_source = _JS_PROMPT_CODEC_PATH.read_text(encoding="utf-8")
     header = re.search(
         r"function buildSystemPrompt\(maxActions(?:,\s*\w+)?\)\s*\{",
         js_source,
@@ -121,7 +121,7 @@ class TestPromptParity(unittest.TestCase):
         self.assertIn("Propose at most 99 high-value actions", prompt)
 
     def test_js_max_actions_template(self):
-        js_source = _JS_PLANNER_PATH.read_text(encoding="utf-8")
+        js_source = _JS_PROMPT_CODEC_PATH.read_text(encoding="utf-8")
         self.assertIn("${maxActions}", js_source)
 
     def test_both_prompts_have_keep_for_review(self):

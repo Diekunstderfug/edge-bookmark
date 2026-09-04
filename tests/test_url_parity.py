@@ -6,7 +6,7 @@ Python ``normalize_url()`` is the source of truth.  Each fixture is an
 ``(input_url, expected_output)`` pair verified against the live Python
 function.  When Node.js is available on ``PATH``, the same fixtures are
 also validated against the JS ``normalizeUrl()`` extracted from
-``extension/service_worker.js``; the test is skipped otherwise.
+``extension/background/snapshot_export.js``; the test is skipped otherwise.
 
 CJK path handling is the primary cross-language risk: Python's
 ``urlunsplit`` preserves raw Unicode path segments, while the JS
@@ -170,7 +170,7 @@ FIXTURES: list[tuple[str, str]] = [
 # fmt: on
 
 _JS_SRC_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "extension", "service_worker.js"
+    os.path.dirname(__file__), "..", "extension", "background", "snapshot_export.js"
 )
 
 
@@ -181,9 +181,9 @@ def _has_node() -> bool:
 def _extract_js_normalize_url() -> str:
     with open(_JS_SRC_PATH, encoding="utf-8") as fh:
         src = fh.read()
-    m = re.search(r"function normalizeUrl\(url\) \{[\s\S]*?\n\}", src)
+    m = re.search(r"function normalizeUrl\(url\) \{[\s\S]*?\n  \}", src)
     if not m:
-        raise RuntimeError("could not extract normalizeUrl from service_worker.js")
+        raise RuntimeError("could not extract normalizeUrl from background/snapshot_export.js")
     return m.group(0)
 
 
@@ -240,10 +240,10 @@ class TestNormalizeUrlParity(unittest.TestCase):
         with open(_JS_SRC_PATH, encoding="utf-8") as fh:
             src = fh.read()
         m = re.search(
-            r"function normalizeUrl\(url\) \{[\s\S]*?\n\}", src
+            r"function normalizeUrl\(url\) \{[\s\S]*?\n  \}", src
         )
         if m is None:
-            self.fail("normalizeUrl function not found in service_worker.js")
+            self.fail("normalizeUrl function not found in background/snapshot_export.js")
         body = m.group(0)
         self.assertNotIn(
             "parsed.toString()",
