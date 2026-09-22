@@ -1,10 +1,17 @@
-"""Parity checks: extension/fast_rules.json must match config/rules.yaml as loaded by rules.py."""
+"""Parity checks: extension/fast_rules.json must equal the payload generated from config/rules.yaml.
+
+config/rules.yaml 是唯一事实来源：本套测试把 extension/fast_rules.json
+当作已提交的生成物做校验——加载 YAML → dump_fast_rules 生成 → 与提交文件
+断言相等（结构逐字段 + 键顺序 + 字节级复现），并保留既有的与
+extension JS 侧一致性检查。
+"""
 
 import json
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from bookmark_advisor.rules import load_rules
+from bookmark_advisor.rules import dump_fast_rules, load_rules, write_fast_rules
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAST_RULES_PATH = REPO_ROOT / "extension" / "fast_rules.json"
@@ -17,6 +24,45 @@ class FastRulesParityTest(unittest.TestCase):
         with open(FAST_RULES_PATH, encoding="utf-8") as f:
             cls.fast_rules = json.load(f)
         cls.rules_config = load_rules(RULES_YAML_PATH)
+        cls.generated = dump_fast_rules(cls.rules_config)
+
+    def test_generated_payload_matches_committed_file(self):
+        self.assertEqual(self.generated, self.fast_rules)
+
+    def test_generated_top_level_key_order_matches(self):
+        self.assertEqual(list(self.generated), list(self.fast_rules))
+
+    def test_generated_defaults_key_order_matches(self):
+        self.assertEqual(
+            list(self.generated["defaults"]),
+            list(self.fast_rules["defaults"]),
+        )
+
+    def test_generated_category_hint_key_order_matches(self):
+        self.assertEqual(
+            list(self.generated["category_hints"]),
+            list(self.fast_rules["category_hints"]),
+        )
+
+    def test_generated_match_key_order_matches(self):
+        self.assertEqual(
+            len(self.generated["bookmark_relocations"]),
+            len(self.fast_rules["bookmark_relocations"]),
+        )
+        for generated_rule, committed_rule in zip(
+            self.generated["bookmark_relocations"],
+            self.fast_rules["bookmark_relocations"],
+        ):
+            self.assertEqual(
+                list(generated_rule["match"]),
+                list(committed_rule["match"]),
+            )
+
+    def test_write_fast_rules_reproduces_committed_bytes(self):
+        with TemporaryDirectory() as temp_dir:
+            out_path = Path(temp_dir) / "fast_rules.json"
+            write_fast_rules(self.rules_config, out_path)
+            self.assertEqual(out_path.read_bytes(), FAST_RULES_PATH.read_bytes())
 
     def test_protected_paths_match(self):
         expected = list(self.rules_config.protected_paths)

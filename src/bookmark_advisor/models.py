@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bookmark_advisor.utils import optional_str
+
 
 @dataclass
 class FolderItem:
@@ -74,6 +76,30 @@ class PlanAction:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "PlanAction":
+        """从 plan JSON 负载重建 PlanAction（``cli apply`` 使用的字段映射）。
+
+        ``action_type``/``reason``/``confidence`` 为必填；其余可选字段经
+        :func:`bookmark_advisor.utils.optional_str` 归一（缺失或空字符串
+        归为 ``None``）。semantic 计划执行侧的 locator 回退是本映射的
+        超集，见 ``executor._plan_action_from_semantic_payload``。
+        """
+        return cls(
+            action_type=str(payload["action_type"]),
+            reason=str(payload["reason"]),
+            confidence=float(payload["confidence"]),
+            bookmark_id=optional_str(payload.get("bookmark_id")),
+            folder_id=optional_str(payload.get("folder_id")),
+            from_path=optional_str(payload.get("from_path")),
+            to_path=optional_str(payload.get("to_path")),
+            target_path=optional_str(payload.get("target_path")),
+            duplicate_of=optional_str(payload.get("duplicate_of")),
+            folder_name=optional_str(payload.get("folder_name")),
+            to_name=optional_str(payload.get("to_name")),
+            details=dict(payload.get("details") or {}),
+        )
 
 
 @dataclass

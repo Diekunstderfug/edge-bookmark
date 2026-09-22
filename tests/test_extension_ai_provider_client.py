@@ -224,7 +224,7 @@ class ExtensionAiProviderClientTest(unittest.TestCase):
               raw, progress, unauthorized, rateLimited,
               dateRetryAfterMs: client.parseRetryAfterMs('Fri, 10 Jul 2026 00:00:03 GMT'),
               invalidRetryAfter: client.parseRetryAfterMs('later'),
-              classifications: [400, 408, 429, 500, 599, 600].map(
+              classifications: [400, 401, 403, 404, 405, 408, 415, 422, 429, 500, 501, 599, 600].map(
                 (status) => [status, client.classifyHttpError(status)],
               ),
             }));
@@ -259,7 +259,11 @@ class ExtensionAiProviderClientTest(unittest.TestCase):
         self.assertIsNone(result["invalidRetryAfter"])
         self.assertEqual(
             result["classifications"],
-            [[400, False], [408, True], [429, True], [500, True], [599, True], [600, False]],
+            [
+                [400, True], [401, False], [403, False], [404, True], [405, True],
+                [408, True], [415, True], [422, True], [429, True],
+                [500, True], [501, True], [599, True], [600, False],
+            ],
         )
 
     def test_request_timeout_aborts_fetch_and_cleans_injected_timer(self) -> None:

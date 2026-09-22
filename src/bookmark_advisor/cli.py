@@ -20,11 +20,16 @@ from bookmark_advisor.job_runner import (
     init_reorg_job,
     run_reorg_job,
 )
-from bookmark_advisor.models import Plan
+from bookmark_advisor.models import Plan, PlanAction
 from bookmark_advisor.parser import load_snapshot
 from bookmark_advisor.planner import build_advise_plan, build_merge_plan
 from bookmark_advisor.reporting import write_plan, write_report
-from bookmark_advisor.rules import RulesValidationError, load_rules, validate_rules_file
+from bookmark_advisor.rules import (
+    RulesValidationError,
+    load_rules,
+    validate_rules_file,
+    write_fast_rules,
+)
 from bookmark_advisor.snapshot_io import (
     build_enriched_snapshot_document,
     build_review_queue_document,
@@ -60,6 +65,11 @@ def main() -> int:
 
     validate_parser = subparsers.add_parser("validate-rules")
     validate_parser.add_argument("--rules", required=True)
+
+    export_fast_rules_parser = subparsers.add_parser("export-fast-rules")
+    export_fast_rules_parser.add_argument("--rules")
+    export_fast_rules_parser.add_argument("--output")
+    export_fast_rules_parser.add_argument("--workspace", default=".")
 
     export_snapshot_parser = subparsers.add_parser("export-snapshot")
     export_snapshot_parser.add_argument("--input", default=DEFAULT_EDGE_BOOKMARKS)
@@ -185,7 +195,7 @@ def main() -> int:
             created_at=payload["created_at"],
             summary=payload["summary"],
             actions=[
-                _plan_action_from_dict(action_payload)
+                PlanAction.from_payload(action_payload)
                 for action_payload in payload["actions"]
             ],
             report_path=payload["report_path"],
@@ -208,6 +218,30 @@ def main() -> int:
                 print(error, file=sys.stderr)
             return 1
         print(f"valid={rules_path.resolve()}")
+        return 0
+
+    if args.command == "export-fast-rules":
+        workspace = Path(args.workspace).resolve()
+        try:
+            rules = load_rules(
+                rules_path=Path(args.rules).expanduser() if args.rules else None,
+                workspace=workspace,
+            )
+        except RulesValidationError as exc:
+            for error in exc.errors:
+                print(error, file=sys.stderr)
+            return 1
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        destination = (
+            Path(args.output).expanduser()
+            if args.output
+            else workspace / "data" / "generated" / "fast_rules.json"
+        )
+        write_fast_rules(rules, destination)
+        print(f"output={destination}")
+        print(f"rules={rules.source_path}")
         return 0
 
     if args.command == "export-snapshot":
@@ -360,29 +394,3 @@ def main() -> int:
         return 0
 
     return 1
-
-
-def _plan_action_from_dict(payload: dict[str, object]):
-    from bookmark_advisor.models import PlanAction
-
-    return PlanAction(
-        action_type=str(payload["action_type"]),
-        reason=str(payload["reason"]),
-        confidence=float(payload["confidence"]),
-        bookmark_id=_optional_str(payload.get("bookmark_id")),
-        folder_id=_optional_str(payload.get("folder_id")),
-        from_path=_optional_str(payload.get("from_path")),
-        to_path=_optional_str(payload.get("to_path")),
-        target_path=_optional_str(payload.get("target_path")),
-        duplicate_of=_optional_str(payload.get("duplicate_of")),
-        folder_name=_optional_str(payload.get("folder_name")),
-        to_name=_optional_str(payload.get("to_name")),
-        details=dict(payload.get("details") or {}),
-    )
-
-
-def _optional_str(value: object) -> str | None:
-    if value is None:
-        return None
-    text = str(value)
-    return text if text else None

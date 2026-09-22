@@ -96,6 +96,19 @@ def slugify(value: str) -> str:
     return "-".join(parts[:6])
 
 
+def optional_str(value: object) -> str | None:
+    """Normalize an optional payload value to a non-empty string or ``None``.
+
+    ``None`` passes through; any other value is coerced via ``str()`` and an
+    empty result collapses to ``None``. Shared by the CLI plan loader and the
+    semantic-plan executor payload mapping.
+    """
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
 def sanitize_for_prompt(text: str) -> str:
     """Strip dangerous characters from text before embedding in AI prompts.
 
@@ -120,7 +133,10 @@ def sanitize_for_prompt(text: str) -> str:
 
 
 def atomic_write_json(
-    path: Path, data: dict[str, object] | list[object], encoding: str = "utf-8"
+    path: Path,
+    data: dict[str, object] | list[object],
+    encoding: str = "utf-8",
+    text: str | None = None,
 ) -> None:
     """Atomically write JSON data to *path* via temp-file + os.replace().
 
@@ -128,6 +144,9 @@ def atomic_write_json(
     * Writes a temp file in ``path.parent`` (same filesystem) then replaces
       the destination atomically.
     * Uses ``ensure_ascii=False`` and ``indent=2`` for readable non-ASCII output.
+    * When *text* is given, writes that pre-rendered JSON text verbatim
+      instead of serializing *data* — used to reproduce committed file
+      formats byte-for-byte (e.g. fast_rules.json single-source exports).
     * Cleans up the temp file on write failure when possible.
     """
     p = Path(path)
@@ -138,7 +157,10 @@ def atomic_write_json(
     )
     try:
         with os.fdopen(fd, "w", encoding=encoding) as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
+            if text is None:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+            else:
+                fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp_path, str(p))
@@ -146,4 +168,3 @@ def atomic_write_json(
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
         raise
-

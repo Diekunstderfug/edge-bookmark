@@ -871,6 +871,88 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         self.assertGreater(result["fetchCount"], 1, "503 should trigger endpoint fallback, not immediate abort")
         self.assertFalse(result["succeeded"])
 
+    def test_request_falls_back_on_400_response_format_unavailable(self):
+        # 400 "response_format type is unavailable" 属于兼容性回退错误(与 CLI 端
+        # ai_planner.py 的 COMPATIBILITY_FALLBACK_STATUS_CODES 对齐):auto 链的
+        # 首个 chat_json_object 尝试被拒后,应回退到下一个格式并成功,而不是
+        # 以 non-retryable 错误立即中止整个计划请求。
+        body = """
+        const formats = [];
+        const validPayload = {
+          summary: { overview: 'fallback ok' },
+          activations: [{
+            op: 'move_bookmark',
+            node_id: '10',
+            target: '/收藏夹栏/AI',
+            duplicate_of_id: '',
+            confidence: 0.91,
+            reason: 'move it'
+          }]
+        };
+        global.fetch = async function (_url, options) {
+          const requestBody = JSON.parse(options.body);
+          formats.push(requestBody.response_format ? requestBody.response_format.type : 'none');
+          if (formats.length === 1) {
+            return {
+              ok: false,
+              status: 400,
+              text: async () => JSON.stringify({
+                error: { message: 'This response_format type is unavailable now.' }
+              })
+            };
+          }
+          return {
+            ok: true,
+            text: async () => JSON.stringify({
+              choices: [{ message: { content: JSON.stringify(validPayload) } }]
+            })
+          };
+        };
+        BookmarkAdvisorAI.generateReviewedPlan({
+          apiKey: 'test-key',
+          apiBaseUrl: 'https://api.example.com/v1',
+          apiStyle: 'auto',
+          model: 'test-model',
+          maxRetries: 0,
+          snapshot: {
+            created_at: 'now',
+            folders: [],
+            bookmarks: [{
+              id: '10',
+              title: 'Example',
+              url: 'https://example.com',
+              normalized_url: 'https://example.com',
+              folder_path: '/收藏夹栏/Loose'
+            }]
+          }
+        }).then((result) => {
+          console.log(JSON.stringify({
+            callCount: formats.length,
+            firstFormat: formats[0],
+            secondFormat: formats[1],
+            succeeded: true,
+            actionType: result.reviewed_plan.actions[0].action_type
+          }));
+        }).catch((error) => {
+          console.log(JSON.stringify({
+            callCount: formats.length,
+            firstFormat: formats[0],
+            secondFormat: formats[1],
+            succeeded: false,
+            message: String(error.message || error)
+          }));
+        });
+        """
+        result = cast(dict[str, object], self._node_script(body))
+        self.assertEqual(
+            result["callCount"], 2,
+            "400 response_format rejection must fall back to the next attempt",
+        )
+        self.assertEqual(result["firstFormat"], "json_object")
+        self.assertEqual(result["secondFormat"], "json_schema")
+        self.assertTrue(result["succeeded"])
+        self.assertEqual(result["actionType"], "move_bookmark")
+
     def test_parse_handles_nested_json_wrapped_in_prose(self):
         # #17 回归:旧版用 /\{[\s\S]*?\}/ 非贪婪正则提取,对嵌套对象
         # (如 {"summary":{...},"activations":[...]})会截断在第一个内层 }。

@@ -12,6 +12,7 @@ from bookmark_advisor.rules import (
     BookmarkRelocationRule,
     FolderRelocationRule,
     RulesConfig,
+    matches_rule,
 )
 from bookmark_advisor.utils import top_tokens, tokenize
 
@@ -191,16 +192,7 @@ def _preferred_bookmark_moves(
 
 
 def _bookmark_matches_rule(bookmark: BookmarkItem, rule: BookmarkRelocationRule) -> bool:
-    match = rule.match
-    if match.folder_path and bookmark.folder_path != match.folder_path:
-        return False
-    if match.title_contains and match.title_contains.lower() not in bookmark.title.lower():
-        return False
-    if match.title_equals and bookmark.title != match.title_equals:
-        return False
-    if match.url_contains and match.url_contains.lower() not in bookmark.url.lower():
-        return False
-    return True
+    return matches_rule(bookmark.folder_path, bookmark.title, bookmark.url, rule)
 
 
 def _choose_canonical(snapshot: BookmarkSnapshot, bookmark_ids: Iterable[str]) -> str:

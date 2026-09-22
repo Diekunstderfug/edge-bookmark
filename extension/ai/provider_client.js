@@ -18,7 +18,7 @@
     const log = normalizeLogger(options.log);
 
     if (!aiEndpoint || typeof aiEndpoint.endpointUrl !== "function" ||
-        typeof aiEndpoint.buildRequestAttempts !== "function") {
+      typeof aiEndpoint.buildRequestAttempts !== "function") {
       throw new Error("ProviderClient requires shared AIEndpoint helpers.");
     }
     if (typeof fetchImpl !== "function") {
@@ -370,6 +370,16 @@
   }
 
   function classifyHttpError(status) {
+    // 400/404/405/415/422/501 与 CLI 端 ai_planner.py 的
+    // COMPATIBILITY_FALLBACK_STATUS_CODES 对齐:这些状态码通常意味着当前
+    // 请求格式或端点不被 provider 支持,应回退到 auto 链的下一个格式,
+    // 而不是以 non-retryable 错误立即中止(501 由下方 5xx 分支覆盖)。
+    if (
+      status === 400 || status === 404 || status === 405 ||
+      status === 415 || status === 422
+    ) {
+      return true;
+    }
     if (status === 408 || status === 429) return true;
     if (status >= 500 && status <= 599) return true;
     return false;
@@ -413,7 +423,7 @@
     if (logger && typeof logger.warn === "function") {
       return (_level, error) => logger.warn(error);
     }
-    return function () {};
+    return function () { };
   }
 
   ai.ProviderClient = Object.freeze({ create });

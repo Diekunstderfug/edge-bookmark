@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from bookmark_advisor.models import Plan, PlanAction
-from bookmark_advisor.utils import atomic_write_json
+from bookmark_advisor.utils import atomic_write_json, optional_str
 
 
 def apply_plan(plan: Plan, destination: Path, write_source: bool = False) -> Path:
@@ -180,25 +180,19 @@ def _contains_node(ancestor: dict[str, Any], candidate: dict[str, Any]) -> bool:
 
 
 def _plan_action_from_semantic_payload(payload: dict[str, Any]) -> PlanAction:
+    """从 reviewed semantic plan 负载重建 PlanAction。
+
+    在 :meth:`PlanAction.from_payload` 共用字段映射之上叠加 locator
+    回退：bookmark_id/folder_id/folder_name 缺失时依次取
+    bookmark_locator/folder_locator 的对应字段。
+    """
+    action = PlanAction.from_payload(payload)
     bookmark_locator = payload.get("bookmark_locator") or {}
     folder_locator = payload.get("folder_locator") or {}
-    return PlanAction(
-        action_type=str(payload.get("action_type", "")),
-        reason=str(payload.get("reason", "")),
-        confidence=float(payload.get("confidence", 0)),
-        bookmark_id=_optional_str(payload.get("bookmark_id")) or _optional_str(bookmark_locator.get("id")),
-        folder_id=_optional_str(payload.get("folder_id")) or _optional_str(folder_locator.get("id")),
-        from_path=_optional_str(payload.get("from_path")),
-        to_path=_optional_str(payload.get("to_path")),
-        target_path=_optional_str(payload.get("target_path")),
-        folder_name=_optional_str(payload.get("folder_name")) or _optional_str(folder_locator.get("name")),
-        to_name=_optional_str(payload.get("to_name")),
-        details=dict(payload.get("details") or {}),
-    )
-
-
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value)
-    return text or None
+    if action.bookmark_id is None:
+        action.bookmark_id = optional_str(bookmark_locator.get("id"))
+    if action.folder_id is None:
+        action.folder_id = optional_str(folder_locator.get("id"))
+    if action.folder_name is None:
+        action.folder_name = optional_str(folder_locator.get("name"))
+    return action

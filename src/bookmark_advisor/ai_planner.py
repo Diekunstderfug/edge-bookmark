@@ -14,7 +14,7 @@ from bookmark_advisor.models import (
     SemanticAction,
     SemanticPlan,
 )
-from bookmark_advisor.rules import BookmarkRelocationRule, RulesConfig
+from bookmark_advisor.rules import BookmarkRelocationRule, RulesConfig, matches_rule
 from .utils import atomic_write_json, sanitize_for_prompt
 
 SUPPORTED_AI_ACTIONS = [
@@ -404,18 +404,12 @@ def _forced_rule_actions(
 
 
 def _bookmark_row_matches_rule(bookmark: dict[str, Any], rule: BookmarkRelocationRule) -> bool:
-    match = rule.match
-    if match.folder_path and bookmark.get("folder_path", "") != match.folder_path:
-        return False
-    title = bookmark.get("title", "")
-    url = bookmark.get("url", "")
-    if match.title_contains and match.title_contains.lower() not in title.lower():
-        return False
-    if match.title_equals and match.title_equals != title:
-        return False
-    if match.url_contains and match.url_contains.lower() not in url.lower():
-        return False
-    return True
+    return matches_rule(
+        bookmark.get("folder_path", ""),
+        bookmark.get("title", ""),
+        bookmark.get("url", ""),
+        rule,
+    )
 
 
 def _import_openai_sdk():
