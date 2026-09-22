@@ -45,7 +45,7 @@ from bookmark_advisor.snapshot_io import (
 from bookmark_advisor.utils import atomic_write_json, slugify
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bookmark-advisor")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -132,265 +132,306 @@ def main() -> int:
         choices=("auto", "responses", "chat_completions", "chat-completions"),
     )
 
-    args = parser.parse_args()
+    return parser
 
-    if args.command == "backup":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        source_path = Path(args.input).expanduser()
-        backup_path = create_backup(source_path, workspace / "data" / "backups")
-        print(backup_path)
-        return 0
 
-    if args.command in {"advise", "merge"}:
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        try:
-            rules = load_rules(
-                rules_path=Path(args.rules).expanduser() if args.rules else None,
-                workspace=workspace,
-            )
-        except RulesValidationError as exc:
-            for error in exc.errors:
-                print(error, file=sys.stderr)
-            return 1
-        except Exception as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        source_path = Path(args.input).expanduser()
-        backup_path = create_backup(source_path, workspace / "data" / "backups")
-        snapshot = load_snapshot(source_path)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = f"{args.command}_{timestamp}"
-        plan_path = workspace / "data" / "plans" / f"{base_name}.json"
-        report_path = workspace / "data" / "reports" / f"{base_name}.md"
-        if args.command == "advise":
-            plan = build_advise_plan(snapshot, backup_path, report_path, rules)
-        else:
-            plan = build_merge_plan(snapshot, backup_path, report_path, rules)
-        write_plan(plan, plan_path)
-        write_report(plan, snapshot, report_path)
-        print(f"backup={backup_path}")
-        print(f"plan={plan_path}")
-        print(f"report={report_path}")
-        print(f"rules={rules.source_path}")
-        print(f"actions={len(plan.actions)}")
-        if args.apply:
-            output_path = workspace / "data" / "output" / f"{base_name}_applied.json"
-            applied_path = apply_plan(plan, output_path, write_source=args.write_source)
-            if args.write_source:
-                print("mode=fallback-debug-write-source")
-            print(f"applied={applied_path}")
-        return 0
+def _resolve_workspace(args: argparse.Namespace) -> Path:
+    workspace = Path(args.workspace).resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
 
-    if args.command == "apply":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        plan_path = Path(args.plan).expanduser()
-        payload = json.loads(plan_path.read_text(encoding="utf-8"))
-        plan = Plan(
-            mode=payload["mode"],
-            source_path=payload["source_path"],
-            backup_path=payload["backup_path"],
-            created_at=payload["created_at"],
-            summary=payload["summary"],
-            actions=[
-                PlanAction.from_payload(action_payload)
-                for action_payload in payload["actions"]
-            ],
-            report_path=payload["report_path"],
-            output_path=payload.get("output_path"),
-            plan_version=str(payload.get("plan_version", "1")),
-            executor=str(payload.get("executor", "edge-extension")),
-            source=str(payload.get("source", "bookmark-advisor")),
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _resolve_destination(out_option: str | None, default: Path) -> Path:
+    return Path(out_option).expanduser() if out_option else default
+
+
+def _load_cli_rules(args: argparse.Namespace, workspace: Path):
+    """Load rules for commands with shared error reporting.
+
+    On failure the error is printed to stderr (RulesValidationError lists each
+    validation error) and None is returned so the caller can exit with code 1.
+    """
+    try:
+        return load_rules(
+            rules_path=Path(args.rules).expanduser() if args.rules else None,
+            workspace=workspace,
         )
-        output_name = slugify(plan.mode) + "_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"
-        destination = workspace / "data" / "output" / output_name
-        applied_path = apply_plan(plan, destination, write_source=args.write_source)
-        print(applied_path)
-        return 0
+    except RulesValidationError as exc:
+        for error in exc.errors:
+            print(error, file=sys.stderr)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+    return None
 
-    if args.command == "validate-rules":
-        rules_path = Path(args.rules).expanduser()
-        errors = validate_rules_file(rules_path)
-        if errors:
-            for error in errors:
-                print(error, file=sys.stderr)
-            return 1
-        print(f"valid={rules_path.resolve()}")
-        return 0
 
-    if args.command == "export-fast-rules":
-        workspace = Path(args.workspace).resolve()
-        try:
-            rules = load_rules(
-                rules_path=Path(args.rules).expanduser() if args.rules else None,
-                workspace=workspace,
-            )
-        except RulesValidationError as exc:
-            for error in exc.errors:
-                print(error, file=sys.stderr)
-            return 1
-        except Exception as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        destination = (
-            Path(args.output).expanduser()
-            if args.output
-            else workspace / "data" / "generated" / "fast_rules.json"
+def _cmd_backup(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    source_path = Path(args.input).expanduser()
+    backup_path = create_backup(source_path, workspace / "data" / "backups")
+    print(backup_path)
+    return 0
+
+
+def _run_heuristic_plan(args: argparse.Namespace, build_plan) -> int:
+    """Shared handler body for the advise and merge commands."""
+    workspace = _resolve_workspace(args)
+    rules = _load_cli_rules(args, workspace)
+    if rules is None:
+        return 1
+    source_path = Path(args.input).expanduser()
+    backup_path = create_backup(source_path, workspace / "data" / "backups")
+    snapshot = load_snapshot(source_path)
+    timestamp = _timestamp()
+    base_name = f"{args.command}_{timestamp}"
+    plan_path = workspace / "data" / "plans" / f"{base_name}.json"
+    report_path = workspace / "data" / "reports" / f"{base_name}.md"
+    plan = build_plan(snapshot, backup_path, report_path, rules)
+    write_plan(plan, plan_path)
+    write_report(plan, snapshot, report_path)
+    print(f"backup={backup_path}")
+    print(f"plan={plan_path}")
+    print(f"report={report_path}")
+    print(f"rules={rules.source_path}")
+    print(f"actions={len(plan.actions)}")
+    if args.apply:
+        output_path = workspace / "data" / "output" / f"{base_name}_applied.json"
+        applied_path = apply_plan(plan, output_path, write_source=args.write_source)
+        if args.write_source:
+            print("mode=fallback-debug-write-source")
+        print(f"applied={applied_path}")
+    return 0
+
+
+def _cmd_advise(args: argparse.Namespace) -> int:
+    return _run_heuristic_plan(args, build_advise_plan)
+
+
+def _cmd_merge(args: argparse.Namespace) -> int:
+    return _run_heuristic_plan(args, build_merge_plan)
+
+
+def _cmd_apply(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    plan_path = Path(args.plan).expanduser()
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan = Plan(
+        mode=payload["mode"],
+        source_path=payload["source_path"],
+        backup_path=payload["backup_path"],
+        created_at=payload["created_at"],
+        summary=payload["summary"],
+        actions=[
+            PlanAction.from_payload(action_payload)
+            for action_payload in payload["actions"]
+        ],
+        report_path=payload["report_path"],
+        output_path=payload.get("output_path"),
+        plan_version=str(payload.get("plan_version", "1")),
+        executor=str(payload.get("executor", "edge-extension")),
+        source=str(payload.get("source", "bookmark-advisor")),
+    )
+    output_name = slugify(plan.mode) + "_" + _timestamp() + ".json"
+    destination = workspace / "data" / "output" / output_name
+    applied_path = apply_plan(plan, destination, write_source=args.write_source)
+    print(applied_path)
+    return 0
+
+
+def _cmd_validate_rules(args: argparse.Namespace) -> int:
+    rules_path = Path(args.rules).expanduser()
+    errors = validate_rules_file(rules_path)
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+    print(f"valid={rules_path.resolve()}")
+    return 0
+
+
+def _cmd_export_fast_rules(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    rules = _load_cli_rules(args, workspace)
+    if rules is None:
+        return 1
+    destination = _resolve_destination(
+        args.output,
+        workspace / "data" / "generated" / "fast_rules.json",
+    )
+    write_fast_rules(rules, destination)
+    print(f"output={destination}")
+    print(f"rules={rules.source_path}")
+    return 0
+
+
+def _cmd_export_snapshot(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    source_path = Path(args.input).expanduser()
+    snapshot = load_snapshot(source_path)
+    document = build_snapshot_document(snapshot)
+    destination = _resolve_destination(
+        args.out,
+        workspace / "data" / "snapshots" / f"snapshot_{_timestamp()}.json",
+    )
+    write_snapshot_document(document, destination)
+    print(destination)
+    return 0
+
+
+def _cmd_init_job(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    try:
+        _job, destination = init_reorg_job(
+            workspace=workspace,
+            source_bookmarks_path=Path(args.input).expanduser(),
+            rules_path=Path(args.rules).expanduser() if args.rules else None,
+            primary_backend=args.primary_backend,
+            fallback_backend=args.fallback_backend or None,
+            allow_write_source=args.allow_write_source,
+            job_path=Path(args.out).expanduser() if args.out else None,
         )
-        write_fast_rules(rules, destination)
-        print(f"output={destination}")
-        print(f"rules={rules.source_path}")
-        return 0
+    except (RulesValidationError, FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(destination)
+    return 0
 
-    if args.command == "export-snapshot":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        source_path = Path(args.input).expanduser()
-        snapshot = load_snapshot(source_path)
-        document = build_snapshot_document(snapshot)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        destination = (
-            Path(args.out).expanduser()
-            if args.out
-            else workspace / "data" / "snapshots" / f"snapshot_{timestamp}.json"
-        )
-        write_snapshot_document(document, destination)
-        print(destination)
-        return 0
 
-    if args.command == "init-job":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        try:
-            _job, destination = init_reorg_job(
-                workspace=workspace,
-                source_bookmarks_path=Path(args.input).expanduser(),
-                rules_path=Path(args.rules).expanduser() if args.rules else None,
-                primary_backend=args.primary_backend,
-                fallback_backend=args.fallback_backend or None,
-                allow_write_source=args.allow_write_source,
-                job_path=Path(args.out).expanduser() if args.out else None,
-            )
-        except (RulesValidationError, FileNotFoundError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        print(destination)
-        return 0
+def _cmd_build_review_queue(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    snapshot_payload = load_snapshot_document(Path(args.snapshot).expanduser())
+    queue_document = build_review_queue_document(snapshot_payload)
+    destination = _resolve_destination(
+        args.out,
+        workspace / "data" / "reviews" / f"review_queue_{_timestamp()}.json",
+    )
+    write_review_queue_document(queue_document, destination)
+    print(destination)
+    return 0
 
-    if args.command == "build-review-queue":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
+
+def _cmd_enrich_snapshot(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    try:
         snapshot_payload = load_snapshot_document(Path(args.snapshot).expanduser())
-        queue_document = build_review_queue_document(snapshot_payload)
-        destination = (
-            Path(args.out).expanduser()
-            if args.out
-            else workspace / "data" / "reviews" / f"review_queue_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        review_payload = load_url_review_document(Path(args.reviews).expanduser())
+        enriched_document = build_enriched_snapshot_document(snapshot_payload, review_payload)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    destination = _resolve_destination(
+        args.out,
+        workspace / "data" / "snapshots" / f"enriched_snapshot_{_timestamp()}.json",
+    )
+    write_enriched_snapshot_document(enriched_document, destination)
+    print(destination)
+    return 0
+
+
+def _cmd_plan_ai(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    try:
+        rules = load_rules(
+            rules_path=Path(args.rules).expanduser() if args.rules else None,
+            workspace=workspace,
         )
-        write_review_queue_document(queue_document, destination)
-        print(destination)
-        return 0
-
-    if args.command == "enrich-snapshot":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        try:
-            snapshot_payload = load_snapshot_document(Path(args.snapshot).expanduser())
-            review_payload = load_url_review_document(Path(args.reviews).expanduser())
-            enriched_document = build_enriched_snapshot_document(snapshot_payload, review_payload)
-        except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        destination = (
-            Path(args.out).expanduser()
-            if args.out
-            else workspace / "data" / "snapshots" / f"enriched_snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        snapshot_payload = load_snapshot_document(Path(args.snapshot).expanduser())
+        plan = plan_with_openai(
+            snapshot_document=snapshot_payload,
+            rules=rules,
+            model=args.model,
+            max_actions=args.max_actions,
+            api_style=args.api_style,
+            base_url=args.base_url,
         )
-        write_enriched_snapshot_document(enriched_document, destination)
-        print(destination)
-        return 0
+    except (RulesValidationError, AIPlannerError, FileNotFoundError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    destination = _resolve_destination(
+        args.out,
+        workspace / "data" / "plans" / f"draft_{_timestamp()}.json",
+    )
+    write_semantic_plan(plan, destination)
+    print(destination)
+    return 0
 
-    if args.command == "plan-ai":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        try:
-            rules = load_rules(
-                rules_path=Path(args.rules).expanduser() if args.rules else None,
-                workspace=workspace,
-            )
-            snapshot_payload = load_snapshot_document(Path(args.snapshot).expanduser())
-            plan = plan_with_openai(
-                snapshot_document=snapshot_payload,
-                rules=rules,
-                model=args.model,
-                max_actions=args.max_actions,
-                api_style=args.api_style,
-                base_url=args.base_url,
-            )
-        except (RulesValidationError, AIPlannerError, FileNotFoundError, json.JSONDecodeError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        destination = (
-            Path(args.out).expanduser()
-            if args.out
-            else workspace / "data" / "plans" / f"draft_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+def _cmd_finalize_plan(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    try:
+        draft_payload = load_semantic_plan(Path(args.input).expanduser())
+        plan = finalize_draft_plan(
+            draft_payload,
+            auto_approve_threshold=args.auto_approve_threshold,
         )
-        write_semantic_plan(plan, destination)
-        print(destination)
-        return 0
+    except (AIPlannerError, FileNotFoundError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    destination = _resolve_destination(
+        args.out,
+        workspace / "data" / "plans" / f"reviewed_{_timestamp()}.json",
+    )
+    write_semantic_plan(plan, destination)
+    print(destination)
+    return 0
 
-    if args.command == "finalize-plan":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        try:
-            draft_payload = load_semantic_plan(Path(args.input).expanduser())
-            plan = finalize_draft_plan(
-                draft_payload,
-                auto_approve_threshold=args.auto_approve_threshold,
-            )
-        except (AIPlannerError, FileNotFoundError, json.JSONDecodeError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        destination = (
-            Path(args.out).expanduser()
-            if args.out
-            else workspace / "data" / "plans" / f"reviewed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+def _cmd_diff_snapshot(args: argparse.Namespace) -> int:
+    workspace = _resolve_workspace(args)
+    before_payload = load_snapshot_document(Path(args.before).expanduser())
+    after_payload = load_snapshot_document(Path(args.after).expanduser())
+    diff_payload = diff_snapshot_documents(before_payload, after_payload)
+    destination = _resolve_destination(
+        args.out,
+        workspace / "data" / "reports" / f"snapshot_diff_{_timestamp()}.json",
+    )
+    atomic_write_json(destination, diff_payload)
+    print(destination)
+    return 0
+
+
+def _cmd_run_job(args: argparse.Namespace) -> int:
+    try:
+        result = run_reorg_job(
+            Path(args.job).expanduser(),
+            model=args.model,
+            max_actions=args.max_actions,
+            api_style=args.api_style,
+            base_url=args.base_url,
+            allow_write_source=args.allow_write_source,
         )
-        write_semantic_plan(plan, destination)
-        print(destination)
-        return 0
+    except (AIPlannerError, FileNotFoundError, json.JSONDecodeError, RulesValidationError, RuntimeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
 
-    if args.command == "diff-snapshot":
-        workspace = Path(args.workspace).resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        before_payload = load_snapshot_document(Path(args.before).expanduser())
-        after_payload = load_snapshot_document(Path(args.after).expanduser())
-        diff_payload = diff_snapshot_documents(before_payload, after_payload)
-        destination = (
-            Path(args.out).expanduser()
-            if args.out
-            else workspace / "data" / "reports" / f"snapshot_diff_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        )
-        atomic_write_json(destination, diff_payload)
-        print(destination)
-        return 0
 
-    if args.command == "run-job":
-        try:
-            result = run_reorg_job(
-                Path(args.job).expanduser(),
-                model=args.model,
-                max_actions=args.max_actions,
-                api_style=args.api_style,
-                base_url=args.base_url,
-                allow_write_source=args.allow_write_source,
-            )
-        except (AIPlannerError, FileNotFoundError, json.JSONDecodeError, RulesValidationError, RuntimeError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return 0
+_COMMAND_HANDLERS = {
+    "backup": _cmd_backup,
+    "advise": _cmd_advise,
+    "merge": _cmd_merge,
+    "apply": _cmd_apply,
+    "validate-rules": _cmd_validate_rules,
+    "export-fast-rules": _cmd_export_fast_rules,
+    "export-snapshot": _cmd_export_snapshot,
+    "init-job": _cmd_init_job,
+    "build-review-queue": _cmd_build_review_queue,
+    "enrich-snapshot": _cmd_enrich_snapshot,
+    "plan-ai": _cmd_plan_ai,
+    "finalize-plan": _cmd_finalize_plan,
+    "diff-snapshot": _cmd_diff_snapshot,
+    "run-job": _cmd_run_job,
+}
 
-    return 1
+
+def main() -> int:
+    parser = _build_parser()
+    args = parser.parse_args()
+    handler = _COMMAND_HANDLERS.get(args.command)
+    if handler is None:
+        return 1
+    return handler(args)
