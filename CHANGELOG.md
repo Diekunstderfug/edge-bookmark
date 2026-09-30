@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-30 — Anthropic/Gemini protocols, compatibility-fallback 4xx
+
+### Extension
+
+- **New protocols**: Anthropic Messages and Gemini generateContent join the OpenAI-compatible styles. New endpoint modes: `anthropic` (`POST {base}/messages`, `x-api-key` + `anthropic-version` headers, plain-JSON prompting) and `gemini` (`POST {base}/models/{model}:generateContent`, `x-goog-api-key` header; `generationConfig.responseMimeType: application/json` with plain-JSON downgrade)
+- **Auto host detection**: `auto` mode puts the native protocol first when the base URL host is `api.anthropic.com` or `generativelanguage.googleapis.com`, keeping the OpenAI chain as backup; exact `/messages` and `:generateContent` base URLs lock the corresponding chain
+- **Compatibility-fallback 4xx**: HTTP 400/404/405/415/422 now advance to the next attempt instead of aborting the run, mirroring the CLI's `COMPATIBILITY_FALLBACK_STATUS_CODES`; 401/403 still abort immediately. Fixes providers that reject structured `response_format` with `400 This response_format type is unavailable now.`
+
+### Tests
+
+- Regression test reproducing the 400 `response_format` rejection (falls back to the next format and succeeds)
+- Contract, payload (URL/headers/body), and response-extractor tests for both new protocols; e2e tests covering Anthropic planning, Gemini host auto-detection, and the Gemini json → plain downgrade
+
 ## 2026-07-21 — Extension module split (ai / background / popup / shared)
 
 ### Extension

@@ -1,6 +1,6 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-09-05
+**Generated:** 2026-09-30
 **Commit:** working tree
 **Branch:** main
 
@@ -126,7 +126,9 @@ python3 -m json.tool data/plans/reviewed_plan.json
 - Default Edge bookmarks path uses the current macOS user profile: `~/Library/Application Support/Microsoft Edge/Default/Bookmarks`
 - Extension API key storage is convenience encryption, not security against browser profile access
 - `ai_planner.py` supports OpenAI-compatible providers via `OPENAI_BASE_URL` with auto-fallback (responses/json_schema → chat.completions/json_schema → chat.completions/json_object → chat.completions/plain_json)
-- Extension `ai_planner.js` auto mode uses `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`
+- Extension `ai_planner.js` auto mode uses `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema` on generic hosts; base URLs on `api.anthropic.com` / `generativelanguage.googleapis.com` put the native protocol first (endpoint modes `anthropic` and `gemini` are also selectable in the popup)
+- Extension natively speaks Anthropic Messages (`POST {base}/messages`, `x-api-key` + `anthropic-version`, plain-JSON prompting) and Gemini generateContent (`POST {base}/models/{model}:generateContent`, `x-goog-api-key`, `responseMimeType` with plain downgrade) — auth headers are chosen per protocol by `authHeaders` in `ai/provider_client.js`
+- Extension HTTP 400/404/405/415/422 are compatibility-fallback errors that advance to the next attempt (`classifyHttpError` mirrors the CLI's `COMPATIBILITY_FALLBACK_STATUS_CODES`); 401/403 abort immediately
 - Extension default model is `gpt-5.4-mini`; UI recommends fast models such as `gpt-5.4-mini`, `deepseek-v4-flash`, and `gemini-2.5-flash`
 - Extension generation auto-batches folders with more than 50 bookmarks into 50-bookmark cached prompt parts (concurrency 3), then merges and deduplicates activations
 - Extension revision is delta-only: the LLM returns only changed actions, and unchanged existing plan rows are preserved locally

@@ -29,7 +29,7 @@ Entry-level behavior:
 | `test_extension_service_worker_state.py` | Service worker wiring — plan execution, undo log, policy engine, quarantine, locator verification |
 | `test_extension_popup_state.py` | Popup — form persistence, settings, i18n |
 | `test_extension_plan_lint.py` | Plan lint — action shape validation and executable/no-op classification |
-| `test_extension_endpoint_urls.py` | AI planner — endpoint URLs, activation schema, lint/retry behavior, prompt encoding |
+| `test_extension_endpoint_urls.py` | AI planner — endpoint URLs, activation schema, lint/retry behavior, prompt encoding, protocol fallback e2e (400 compatibility, Anthropic, Gemini host detection and json→plain downgrade) |
 | `test_extension_boot_order.py` | Script/import order in `service_worker.js` `importScripts`, `popup.html`, and `offscreen.html` |
 
 Module tests (1:1 with `extension/` modules):
@@ -52,8 +52,8 @@ Module tests (1:1 with `extension/` modules):
 | `test_extension_ai_snapshot_model.py` | `ai/snapshot_model.js` — snapshot-to-prompt model |
 | `test_extension_ai_batching.py` | `ai/batching.js` — 50-bookmark part batching |
 | `test_extension_ai_prompt_codec.py` | `ai/prompt_codec.js` — pipe-delimited `encodeSnapshot`/`encodePlan` |
-| `test_extension_ai_response_codec.py` | `ai/response_codec.js` — LLM response parsing |
-| `test_extension_ai_provider_client.py` | `ai/provider_client.js` — HTTPS fetch fallback chain |
+| `test_extension_ai_response_codec.py` | `ai/response_codec.js` — LLM response parsing (OpenAI / Anthropic / Gemini shapes) |
+| `test_extension_ai_provider_client.py` | `ai/provider_client.js` — HTTPS fetch fallback chain, protocol payloads and auth headers (OpenAI / Anthropic / Gemini), HTTP error classification |
 | `test_extension_plan_compiler.py` | `ai/plan_compiler.js` — activation merge/dedup, `mergeRevisionDraft` |
 | `test_extension_popup_runtime_client.py` | `popup/runtime_client.js` — popup↔SW messaging |
 | `test_extension_popup_job_state.py` | `popup/job_state.js` — background job polling/state |

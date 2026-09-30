@@ -48,7 +48,8 @@ Message types (chrome.runtime.sendMessage), routed by background/message_router.
 - **No bundler**: Files are plain JS loaded directly — no webpack/vite/esbuild
 - **No npm/node**: No package.json, no node_modules
 - **IIFE module pattern**: Every module wraps in `(function attach*(globalScope) {...})(globalThis)` and attaches frozen exports under `BookmarkAdvisor.*`; facades and shared modules also guard `typeof require === "function"` so tests can load them under Node
-- **AI planner is SDK-free**: Uses raw `fetch()` with auto-fallback chain (`chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`)
+- **AI planner is SDK-free**: Uses raw `fetch()` against OpenAI-compatible, Anthropic Messages, and Gemini generateContent APIs. Generic-host auto-fallback chain: `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`; base URLs on `api.anthropic.com` / `generativelanguage.googleapis.com` put the native protocol first (`providerFamily` in `shared/ai_endpoint.js`)
+- **Compatibility-fallback 4xx**: HTTP 400/404/405/415/422 advance to the next attempt (`classifyHttpError` in `ai/provider_client.js`, mirroring the CLI's `COMPATIBILITY_FALLBACK_STATUS_CODES`); 401/403 abort immediately without fanning out
 - **Large-folder planning**: Generation auto-batches >50 bookmarks into 50-bookmark prompt parts with concurrency 3, then merges/deduplicates activations before compile/finalize
 - **Delta-only revision**: Revision prompts return only changed activations; unchanged plan rows are preserved locally by `mergeRevisionDraft`
 - **Prompt cache layout**: Keep shared instructions/rules/folder catalog before per-part bookmark rows; official OpenAI requests add `prompt_cache_key` and supported models use 24h retention

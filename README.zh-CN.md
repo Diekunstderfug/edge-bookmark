@@ -8,7 +8,7 @@ AI 驱动的 Microsoft Edge 书签整理工具。日常使用 Edge 扩展即可�
 
 1. 打开 `edge://extensions`，启用开发者模式，将 `extension/` 目录加载为已解包的扩展。
 2. 打开扩展弹窗，切换到 **AI 服务**，设置：
-   - **API base URL**：`https://api.openai.com/v1` 或其他兼容 OpenAI 的 HTTPS 端点
+   - **API base URL**：`https://api.openai.com/v1`、其他兼容 OpenAI 的 HTTPS 端点、`https://api.anthropic.com/v1`（Anthropic）或 `https://generativelanguage.googleapis.com/v1beta`（Gemini）
    - **Model**：默认 `gpt-5.4-mini`；速度快的兼容模型效果最好
    - **API key**：以 AES-GCM 密文形式保存在 `chrome.storage.local`
 3. 切回 **整理**，可选择一个聚焦文件夹 (focus folder)，然后点击 **Generate AI Plan**。
@@ -17,7 +17,7 @@ AI 驱动的 Microsoft Edge 书签整理工具。日常使用 Edge 扩展即可�
 6. 如需撤销最新一批执行，点击 **Undo Last Execution**。
 7. 点击 **Generate New Plan for Remaining**，继续处理未审核的项目。
 
-扩展无构建步骤、无 SDK 依赖。通过原生 `fetch` 调用兼容 OpenAI 的 REST API，`auto` 模式依次尝试 `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`。
+扩展无构建步骤、无 SDK 依赖。通过原生 `fetch` 支持三类协议：OpenAI 兼容（Responses / Chat Completions / Completions）、Anthropic Messages 和 Gemini generateContent。`auto` 模式在普通域名上依次尝试 `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`；base URL 位于 `api.anthropic.com` 或 `generativelanguage.googleapis.com` 时原生协议优先。Provider 拒绝某种 `response_format` 或端点形态时（HTTP 400/404/405/415/422），会自动降级到下一种格式而不是直接失败。
 
 ## 调整设置
 
@@ -29,10 +29,10 @@ AI 驱动的 Microsoft Edge 书签整理工具。日常使用 Edge 扩展即可�
 - **计划审查和执行** — 生成、加载、修改、执行、撤销、继续生成和下载报告。
 
 **AI 服务：**
-- **API 地址** — OpenAI 或其他兼容 OpenAI 的 HTTPS endpoint。
+- **API 地址** — OpenAI、其他兼容 OpenAI 的 HTTPS endpoint、Anthropic 或 Gemini。
 - **API key** — 以 AES-GCM 密文形式保存到 `chrome.storage.local`。
 - **Model（模型）** — 快速模型（`gpt-5.4-mini`、`deepseek-v4-flash`、`gemini-2.5-flash`）效果最好。推理/思考类模型会慢很多。
-- **高级连接设置** — 端点模式、请求超时和重试次数。
+- **高级连接设置** — 端点模式（Auto fallback、Responses API、Chat Completions、Completions、Anthropic Messages、Gemini）、请求超时和重试次数。
 
 **策略：**
 - **规划风格** — AI 的激进程度：`均衡`（默认，合理移动，不确定的保留审查）、`保守`（只移动非常确定的，其余保持原位）、`积极`（尽量全部归类，允许创建新文件夹）。

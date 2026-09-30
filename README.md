@@ -8,7 +8,7 @@ AI-first Microsoft Edge bookmark organizer. The normal workflow is the Edge exte
 
 1. Open `edge://extensions`, enable developer mode, and load the `extension/` directory as an unpacked extension.
 2. Open the extension popup, switch to **AI Service**, and set:
-   - **API base URL**: `https://api.openai.com/v1` or another OpenAI-compatible HTTPS endpoint
+   - **API base URL**: `https://api.openai.com/v1`, another OpenAI-compatible HTTPS endpoint, `https://api.anthropic.com/v1` (Anthropic), or `https://generativelanguage.googleapis.com/v1beta` (Gemini)
    - **Model**: `gpt-5.4-mini` by default; fast compatible models work best
    - **API key**: saved as AES-GCM ciphertext in `chrome.storage.local`
 3. Return to **Organize**, optionally pick a focus folder, then click **Generate AI Plan**.
@@ -17,7 +17,7 @@ AI-first Microsoft Edge bookmark organizer. The normal workflow is the Edge exte
 6. Use **Undo Last Execution** if the latest batch needs to be reversed.
 7. Click **Generate New Plan for Remaining** to continue with unreviewed items.
 
-The extension has no build step and no SDK dependency. It uses raw `fetch` against OpenAI-compatible REST APIs and, in `auto` mode, tries `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema`.
+The extension has no build step and no SDK dependency. It uses raw `fetch` and speaks three protocol families: OpenAI-compatible (Responses / Chat Completions / Completions), Anthropic Messages, and Gemini generateContent. In `auto` mode it tries `chat_json_object → chat_json_schema → chat_plain_json → completions_plain_json → responses_json_schema` on generic hosts, and puts the native protocol first when the base URL is on `api.anthropic.com` or `generativelanguage.googleapis.com`. Providers that reject a `response_format` or endpoint shape (HTTP 400/404/405/415/422) fall through to the next format instead of failing the run.
 
 ## Adjusting Settings
 
@@ -29,10 +29,10 @@ The popup has four sections. Each controls a different part of the workflow:
 - **Plan review and execution** — generate, load, revise, execute, undo, continue, and download reports.
 
 **AI Service:**
-- **API base URL** — OpenAI or another OpenAI-compatible HTTPS endpoint.
+- **API base URL** — OpenAI, another OpenAI-compatible HTTPS endpoint, Anthropic, or Gemini.
 - **API key** — saved as AES-GCM ciphertext in `chrome.storage.local`.
 - **Model** — fast models (`gpt-5.4-mini`, `deepseek-v4-flash`, `gemini-2.5-flash`) work best. Reasoning/thinking models are much slower.
-- **Advanced connection settings** — endpoint mode, request timeout, and retry count.
+- **Advanced connection settings** — endpoint mode (Auto fallback, Responses API, Chat Completions, Completions, Anthropic Messages, Gemini), request timeout, and retry count.
 
 **Strategy:**
 - **Planning style** — how aggressive the AI is: `balanced` (default, reasonable moves, uncertain items stay for review), `conservative` (only move high-confidence items), or `aggressive` (try to categorize everything, allow new folder creation).
