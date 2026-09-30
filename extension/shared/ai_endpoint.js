@@ -7,7 +7,9 @@
   const DEFAULT_API_STYLE = "auto";
   const DEFAULT_REQUEST_TIMEOUT_MS = 180000;
   const MAX_REQUEST_TIMEOUT_MS = 300000;
-  const API_STYLES = Object.freeze(["auto", "responses", "chat_completions", "completions"]);
+  const API_STYLES = Object.freeze([
+    "auto", "responses", "chat_completions", "completions", "anthropic", "gemini",
+  ]);
 
   function nonNegativeInteger(value, fallback) {
     const numberValue = Number(value);
@@ -50,6 +52,8 @@
     if (pathname.endsWith("/chat/completions")) return "chat_completions";
     if (pathname.endsWith("/responses")) return "responses";
     if (pathname.endsWith("/completions")) return "completions";
+    if (pathname.endsWith("/messages")) return "anthropic_messages";
+    if (pathname.toLowerCase().endsWith(":generatecontent")) return "gemini_generate_content";
     return "";
   }
 
@@ -73,6 +77,10 @@
       return ["chat_plain_json", "chat_json_object", "chat_json_schema"];
     }
     if (exactEndpoint === "completions") return ["completions_plain_json"];
+    if (exactEndpoint === "anthropic_messages") return ["anthropic_messages_json"];
+    if (exactEndpoint === "gemini_generate_content") {
+      return ["gemini_json", "gemini_plain_json"];
+    }
 
     const style = normalizeStyle(apiStyle);
     if (style === "responses") return ["responses_json_schema"];
@@ -80,13 +88,34 @@
       return ["chat_plain_json", "chat_json_object", "chat_json_schema"];
     }
     if (style === "completions") return ["completions_plain_json"];
-    return [
+    if (style === "anthropic") return ["anthropic_messages_json"];
+    if (style === "gemini") return ["gemini_json", "gemini_plain_json"];
+
+    // auto:官方 Anthropic/Gemini 域名原生协议优先,OpenAI 兼容链兜底
+    //(网关类 base URL 无法识别时,由用户显式选择 anthropic/gemini 样式)。
+    const openAiChain = [
       "chat_json_object",
       "chat_json_schema",
       "chat_plain_json",
       "completions_plain_json",
       "responses_json_schema",
     ];
+    const family = providerFamily(apiBaseUrl);
+    if (family === "anthropic") return ["anthropic_messages_json", ...openAiChain];
+    if (family === "gemini") return ["gemini_json", "gemini_plain_json", ...openAiChain];
+    return openAiChain;
+  }
+
+  function providerFamily(apiBaseUrl) {
+    let parsed;
+    try {
+      parsed = new URL(normalizeBaseUrl(apiBaseUrl));
+    } catch (_error) {
+      return "";
+    }
+    if (parsed.hostname === "api.anthropic.com") return "anthropic";
+    if (parsed.hostname === "generativelanguage.googleapis.com") return "gemini";
+    return "";
   }
 
   function clampRequestTimeout(value, fallback) {
@@ -119,6 +148,7 @@
     extractOrigin,
     normalizeBaseUrl,
     normalizeStyle,
+    providerFamily,
     requestAttemptCount,
   });
 })(globalThis);

@@ -483,6 +483,9 @@
     if (attempt === "chat_json_schema") return "Chat JSON schema";
     if (attempt === "chat_json_object") return "Chat JSON object";
     if (attempt === "completions_plain_json") return "Completions plain JSON";
+    if (attempt === "anthropic_messages_json") return "Anthropic Messages JSON";
+    if (attempt === "gemini_json") return "Gemini JSON";
+    if (attempt === "gemini_plain_json") return "Gemini plain JSON";
     return "Chat plain JSON";
   }
 

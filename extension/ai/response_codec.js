@@ -1,4 +1,4 @@
-/* OpenAI-compatible provider 响应文本提取与 JSON 解码。 */
+/* LLM provider 响应文本提取与 JSON 解码(OpenAI 兼容 / Anthropic / Gemini)。 */
 
 (function attachResponseCodec(globalScope) {
   const root = globalScope.BookmarkAdvisor || (globalScope.BookmarkAdvisor = {});
@@ -11,6 +11,12 @@
     }
     if (attempt === "completions_plain_json") {
       return extractCompletionsText(payload);
+    }
+    if (attempt === "anthropic_messages_json") {
+      return extractAnthropicMessagesText(payload);
+    }
+    if (attempt === "gemini_json" || attempt === "gemini_plain_json") {
+      return extractGeminiText(payload);
     }
     return extractChatCompletionText(payload);
   }
@@ -124,12 +130,42 @@
     throw new Error("OpenAI completion did not include text content.");
   }
 
+  function extractAnthropicMessagesText(payload) {
+    const blocks = payload && Array.isArray(payload.content) ? payload.content : [];
+    const text = blocks
+      .filter((block) => block && block.type === "text" && block.text)
+      .map((block) => String(block.text))
+      .join("");
+    if (text.trim()) {
+      return text;
+    }
+    throw new Error("Anthropic response did not include text content.");
+  }
+
+  function extractGeminiText(payload) {
+    const candidate = payload && Array.isArray(payload.candidates)
+      ? payload.candidates[0]
+      : null;
+    const parts = candidate && candidate.content && Array.isArray(candidate.content.parts)
+      ? candidate.content.parts
+      : [];
+    const text = parts
+      .map((part) => (part && part.text ? String(part.text) : ""))
+      .join("");
+    if (text.trim()) {
+      return text;
+    }
+    throw new Error("Gemini response did not include candidate text.");
+  }
+
   ai.ResponseCodec = Object.freeze({
     MAX_TEXT_LENGTH,
     extractAttemptText,
     extractBalancedJsonObject,
     extractChatCompletionText,
     extractCompletionsText,
+    extractAnthropicMessagesText,
+    extractGeminiText,
     extractResponsesText,
     parseDraftPlanText,
     stripJsonFences,

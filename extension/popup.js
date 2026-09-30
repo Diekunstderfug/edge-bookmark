@@ -1521,6 +1521,10 @@ function updateEndpointPreview() {
       endpointPreviewEl.textContent = `Will call ${baseUrl}/chat/completions.`;
     } else if (apiStyle === "completions") {
       endpointPreviewEl.textContent = `Will call ${baseUrl}/completions.`;
+    } else if (apiStyle === "anthropic") {
+      endpointPreviewEl.textContent = `Will call ${baseUrl}/messages.`;
+    } else if (apiStyle === "gemini") {
+      endpointPreviewEl.textContent = `Will call ${baseUrl}/models/<model>:generateContent.`;
     } else {
       endpointPreviewEl.textContent = `Will try ${baseUrl}/chat/completions, then ${baseUrl}/completions, then ${baseUrl}/responses.`;
     }
@@ -1532,7 +1536,10 @@ function updateEndpointPreview() {
 
 function coreEndpointKind(apiBaseUrl) {
   const kind = POPUP_ENDPOINT.endpointKind(apiBaseUrl);
-  return kind === "chat_completions" ? "chat/completions" : kind;
+  if (kind === "chat_completions") return "chat/completions";
+  if (kind === "anthropic_messages") return "messages (Anthropic)";
+  if (kind === "gemini_generate_content") return "generateContent (Gemini)";
+  return kind;
 }
 
 async function saveEncryptedApiKey(apiKey) {

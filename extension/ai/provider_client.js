@@ -1,4 +1,4 @@
-/* OpenAI-compatible provider 请求构造与 HTTP transport。 */
+/* LLM provider 请求构造与 HTTP transport(OpenAI 兼容 / Anthropic Messages / Gemini generateContent)。 */
 
 (function attachProviderClient(globalScope) {
   const root = globalScope.BookmarkAdvisor || (globalScope.BookmarkAdvisor = {});
@@ -101,6 +101,44 @@
         );
       }
 
+      if (attempt === "anthropic_messages_json") {
+        return postCompatible(
+          aiEndpoint.endpointUrl(apiBaseUrl, "messages"),
+          apiKey,
+          requestTimeoutMs,
+          {
+            model,
+            max_tokens: 8192,
+            temperature: 0,
+            system: withPlainJsonInstruction(systemText),
+            messages: [{ role: "user", content: userText }],
+          },
+          signal,
+          onProgress,
+          "x-api-key",
+        );
+      }
+
+      if (attempt === "gemini_json" || attempt === "gemini_plain_json") {
+        const generationConfig = { temperature: 0 };
+        if (attempt === "gemini_json") {
+          generationConfig.responseMimeType = "application/json";
+        }
+        return postCompatible(
+          geminiGenerateContentUrl(apiBaseUrl, model),
+          apiKey,
+          requestTimeoutMs,
+          {
+            systemInstruction: { parts: [{ text: withPlainJsonInstruction(systemText) }] },
+            contents: [{ role: "user", parts: [{ text: userText }] }],
+            generationConfig,
+          },
+          signal,
+          onProgress,
+          "x-goog-api-key",
+        );
+      }
+
       const chatPayload = {
         model,
         messages: buildChatMessages(systemText, userText, schema, attempt),
@@ -127,7 +165,9 @@
       );
     }
 
-    async function postCompatible(url, apiKey, timeoutMs, body, externalSignal, onProgress) {
+    async function postCompatible(
+      url, apiKey, timeoutMs, body, externalSignal, onProgress, authStyle,
+    ) {
       const effectiveTimeout = timeoutMs || defaultRequestTimeoutMs;
       const controller = new AbortControllerImpl();
       let timedOut = false;
@@ -169,10 +209,7 @@
       try {
         response = await fetchImpl(url, {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
+          headers: authHeaders(apiKey, authStyle),
           body: JSON.stringify(body),
           signal: controller.signal,
         });
@@ -316,13 +353,46 @@
       if (attempt === "chat_plain_json" || attempt === "chat_json_object") {
         messages[0] = {
           role: "system",
-          content: `${systemText}\nReturn a single JSON object and no Markdown fences. ` +
-            "Top-level fields: summary (object with overview string), activations " +
-            "(array of objects with op, node_id, target, duplicate_of_id, confidence, reason).",
+          content: withPlainJsonInstruction(systemText),
         };
       }
       messages.push({ role: "user", content: userText });
       return messages;
+    }
+
+    // Anthropic/Gemini 等无 response_format 的协议统一走纯 JSON 提示词。
+    function withPlainJsonInstruction(systemText) {
+      return `${systemText}\nReturn a single JSON object and no Markdown fences. ` +
+        "Top-level fields: summary (object with overview string), activations " +
+        "(array of objects with op, node_id, target, duplicate_of_id, confidence, reason).";
+    }
+
+    function geminiGenerateContentUrl(apiBaseUrl, model) {
+      const bare = String(model || "").replace(/^models\//i, "");
+      return aiEndpoint.endpointUrl(
+        apiBaseUrl,
+        `models/${encodeURIComponent(bare)}:generateContent`,
+      );
+    }
+
+    function authHeaders(apiKey, authStyle) {
+      if (authStyle === "x-api-key") {
+        return {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        };
+      }
+      if (authStyle === "x-goog-api-key") {
+        return {
+          "x-goog-api-key": apiKey,
+          "Content-Type": "application/json",
+        };
+      }
+      return {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      };
     }
 
     function attachRetryAfterMetadata(error, headers) {
@@ -359,13 +429,16 @@
     }
 
     return Object.freeze({
+      authHeaders,
       buildChatMessages,
       buildRequestAttempts,
       classifyHttpError,
+      geminiGenerateContentUrl,
       parseRetryAfterMs,
       postCompatible,
       requestCompatibleAttempt,
       withOpenAiPromptCacheFields,
+      withPlainJsonInstruction,
     });
   }
 

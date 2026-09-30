@@ -75,6 +75,163 @@ class ExtensionAiProviderClientTest(unittest.TestCase):
             ],
         )
 
+    def test_build_request_attempts_supports_anthropic_and_gemini_protocols(self) -> None:
+        result = self._node_eval(
+            """
+            const client = BookmarkAdvisor.AI.ProviderClient.create({
+              fetch: async () => { throw new Error('unused'); },
+            });
+            console.log(JSON.stringify({
+              anthropicStyle: client.buildRequestAttempts(
+                'anthropic', 'https://gateway.example.com/llm',
+              ),
+              geminiStyle: client.buildRequestAttempts(
+                'gemini', 'https://gateway.example.com/llm',
+              ),
+              exactAnthropic: client.buildRequestAttempts(
+                'auto', 'https://api.anthropic.com/v1/messages',
+              ),
+              exactGemini: client.buildRequestAttempts(
+                'auto',
+                'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+              ),
+              autoAnthropicHost: client.buildRequestAttempts(
+                'auto', 'https://api.anthropic.com/v1',
+              ),
+              autoGeminiHost: client.buildRequestAttempts(
+                'auto', 'https://generativelanguage.googleapis.com/v1beta',
+              ),
+            }));
+            """
+        )
+        self.assertEqual(result["anthropicStyle"], ["anthropic_messages_json"])
+        self.assertEqual(result["geminiStyle"], ["gemini_json", "gemini_plain_json"])
+        self.assertEqual(result["exactAnthropic"], ["anthropic_messages_json"])
+        self.assertEqual(result["exactGemini"], ["gemini_json", "gemini_plain_json"])
+        self.assertEqual(
+            result["autoAnthropicHost"],
+            [
+                "anthropic_messages_json",
+                "chat_json_object",
+                "chat_json_schema",
+                "chat_plain_json",
+                "completions_plain_json",
+                "responses_json_schema",
+            ],
+        )
+        self.assertEqual(
+            result["autoGeminiHost"],
+            [
+                "gemini_json",
+                "gemini_plain_json",
+                "chat_json_object",
+                "chat_json_schema",
+                "chat_plain_json",
+                "completions_plain_json",
+                "responses_json_schema",
+            ],
+        )
+
+    def test_request_attempts_build_anthropic_and_gemini_payloads(self) -> None:
+        result = self._node_eval(
+            """
+            const calls = [];
+            const client = BookmarkAdvisor.AI.ProviderClient.create({
+              fetch: async (url, options) => {
+                calls.push({
+                  url,
+                  headers: options.headers,
+                  body: JSON.parse(options.body),
+                });
+                return {
+                  ok: true,
+                  status: 200,
+                  headers: { get: () => null },
+                  text: async () => JSON.stringify({ accepted: true }),
+                };
+              },
+            });
+            const schema = {
+              type: 'object', additionalProperties: false, properties: {}, required: [],
+            };
+            const common = {
+              apiKey: 'secret', requestTimeoutMs: 2000,
+              schema, systemText: 'SYSTEM', userText: 'USER',
+            };
+            await client.requestCompatibleAttempt({
+              ...common,
+              attempt: 'anthropic_messages_json',
+              apiBaseUrl: 'https://api.anthropic.com/v1',
+              model: 'claude-sonnet-4-5',
+            });
+            await client.requestCompatibleAttempt({
+              ...common,
+              attempt: 'gemini_json',
+              apiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+              model: 'gemini-2.5-flash',
+            });
+            await client.requestCompatibleAttempt({
+              ...common,
+              attempt: 'gemini_plain_json',
+              apiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+              model: 'models/gemini-2.5-flash',
+            });
+            console.log(JSON.stringify(calls));
+            """
+        )
+        self.assertEqual(
+            [call["url"] for call in result],
+            [
+                "https://api.anthropic.com/v1/messages",
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            ],
+        )
+        anthropic = result[0]
+        self.assertEqual(
+            anthropic["headers"],
+            {
+                "x-api-key": "secret",
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+        )
+        self.assertEqual(anthropic["body"]["model"], "claude-sonnet-4-5")
+        self.assertEqual(anthropic["body"]["max_tokens"], 8192)
+        self.assertNotIn("response_format", anthropic["body"])
+        self.assertIn("Return a single JSON object", anthropic["body"]["system"])
+        self.assertEqual(
+            anthropic["body"]["messages"],
+            [{ "role": "user", "content": "USER" }],
+        )
+
+        geminiJson = result[1]
+        self.assertEqual(
+            geminiJson["headers"],
+            {
+                "x-goog-api-key": "secret",
+                "Content-Type": "application/json",
+            },
+        )
+        self.assertEqual(
+            geminiJson["body"]["generationConfig"],
+            { "temperature": 0, "responseMimeType": "application/json" },
+        )
+        self.assertIn(
+            "Return a single JSON object",
+            geminiJson["body"]["systemInstruction"]["parts"][0]["text"],
+        )
+        self.assertEqual(
+            geminiJson["body"]["contents"],
+            [{ "role": "user", "parts": [{ "text": "USER" }] }],
+        )
+
+        geminiPlain = result[2]
+        self.assertEqual(
+            geminiPlain["body"]["generationConfig"],
+            { "temperature": 0 },
+        )
+
     def test_request_attempts_preserve_urls_headers_bodies_and_prompt_cache_fields(self) -> None:
         result = self._node_eval(
             """

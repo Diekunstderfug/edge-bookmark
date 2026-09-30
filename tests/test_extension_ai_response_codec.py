@@ -86,6 +86,55 @@ class ExtensionAiResponseCodecTest(unittest.TestCase):
         self.assertEqual(result["chat"], "OpenAI chat completion did not include message content.")
         self.assertEqual(result["completions"], "OpenAI completion did not include text content.")
 
+    def test_extract_attempt_text_supports_anthropic_and_gemini_shapes(self) -> None:
+        result = self._node_eval(
+            """
+            const codec = BookmarkAdvisor.AI.ResponseCodec;
+            function capture(callback) {
+              try { callback(); return ''; } catch (error) { return error.message; }
+            }
+            console.log(JSON.stringify({
+              anthropicJoined: codec.extractAttemptText(
+                'anthropic_messages_json', {
+                  content: [
+                    { type: 'text', text: '{"summary":' },
+                    { type: 'text', text: '{"inner":1}}' },
+                    { type: 'tool_use', id: 'ignored' },
+                  ],
+                },
+              ),
+              anthropicEmpty: capture(() => codec.extractAnthropicMessagesText({ content: [] })),
+              geminiJoined: codec.extractAttemptText(
+                'gemini_json', {
+                  candidates: [{
+                    content: {
+                      role: 'model',
+                      parts: [{ text: '{"summary":' }, { text: '{},"activations":[]}' }],
+                    },
+                  }],
+                },
+              ),
+              geminiPlain: codec.extractAttemptText(
+                'gemini_plain_json', {
+                  candidates: [{ content: { parts: [{ text: '{"source":"gemini"}' }] } }],
+                },
+              ),
+              geminiEmpty: capture(() => codec.extractGeminiText({ candidates: [] })),
+            }));
+            """
+        )
+        self.assertEqual(result["anthropicJoined"], '{"summary":{"inner":1}}')
+        self.assertEqual(
+            result["anthropicEmpty"],
+            "Anthropic response did not include text content.",
+        )
+        self.assertEqual(result["geminiJoined"], '{"summary":{},"activations":[]}')
+        self.assertEqual(result["geminiPlain"], '{"source":"gemini"}')
+        self.assertEqual(
+            result["geminiEmpty"],
+            "Gemini response did not include candidate text.",
+        )
+
     def test_parse_draft_plan_handles_double_fences_and_balanced_nested_json(self) -> None:
         result = self._node_eval(
             """

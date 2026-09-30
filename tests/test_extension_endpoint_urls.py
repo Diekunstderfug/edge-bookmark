@@ -953,6 +953,241 @@ class ExtensionEndpointUrlTest(unittest.TestCase):
         self.assertTrue(result["succeeded"])
         self.assertEqual(result["actionType"], "move_bookmark")
 
+    def test_generate_plan_with_anthropic_messages_protocol(self):
+        # anthropic 样式:POST {base}/messages,x-api-key + anthropic-version 认证头,
+        # system 为顶层字段,无 response_format,从 content[].text 拼接响应。
+        body = """
+        const calls = [];
+        const validPayload = {
+          summary: { overview: 'anthropic ok' },
+          activations: [{
+            op: 'move_bookmark',
+            node_id: '10',
+            target: '/收藏夹栏/AI',
+            duplicate_of_id: '',
+            confidence: 0.91,
+            reason: 'move it'
+          }]
+        };
+        global.fetch = async function (url, options) {
+          calls.push({ url, headers: options.headers, body: JSON.parse(options.body) });
+          return {
+            ok: true,
+            text: async () => JSON.stringify({
+              content: [{ type: 'text', text: JSON.stringify(validPayload) }]
+            })
+          };
+        };
+        BookmarkAdvisorAI.generateReviewedPlan({
+          apiKey: 'test-key',
+          apiBaseUrl: 'https://api.anthropic.com/v1',
+          apiStyle: 'anthropic',
+          model: 'claude-sonnet-4-5',
+          maxRetries: 0,
+          snapshot: {
+            created_at: 'now',
+            folders: [],
+            bookmarks: [{
+              id: '10',
+              title: 'Example',
+              url: 'https://example.com',
+              normalized_url: 'https://example.com',
+              folder_path: '/收藏夹栏/Loose'
+            }]
+          }
+        }).then((result) => {
+          console.log(JSON.stringify({
+            callCount: calls.length,
+            succeeded: true,
+            actionType: result.reviewed_plan.actions[0].action_type,
+            call: calls[0]
+          }));
+        }).catch((error) => {
+          console.log(JSON.stringify({
+            callCount: calls.length,
+            succeeded: false,
+            message: String(error.message || error)
+          }));
+        });
+        """
+        result = cast(dict[str, object], self._node_script(body))
+        self.assertTrue(result["succeeded"], result.get("message"))
+        self.assertEqual(result["callCount"], 1)
+        self.assertEqual(result["actionType"], "move_bookmark")
+        call = cast(dict[str, object], result["call"])
+        self.assertEqual(call["url"], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(
+            call["headers"],
+            {
+                "x-api-key": "test-key",
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+        )
+        callBody = cast(dict[str, object], call["body"])
+        self.assertNotIn("response_format", callBody)
+        self.assertIn("Return a single JSON object", cast(str, callBody["system"]))
+
+    def test_generate_plan_auto_detects_gemini_host(self):
+        # auto 模式识别 generativelanguage.googleapis.com:首个尝试即
+        # gemini_json(x-goog-api-key 认证,responseMimeType application/json),
+        # URL 为 models/{model}:generateContent。
+        body = """
+        const calls = [];
+        const validPayload = {
+          summary: { overview: 'gemini ok' },
+          activations: [{
+            op: 'move_bookmark',
+            node_id: '10',
+            target: '/收藏夹栏/AI',
+            duplicate_of_id: '',
+            confidence: 0.91,
+            reason: 'move it'
+          }]
+        };
+        global.fetch = async function (url, options) {
+          calls.push({ url, headers: options.headers, body: JSON.parse(options.body) });
+          return {
+            ok: true,
+            text: async () => JSON.stringify({
+              candidates: [{
+                content: { role: 'model', parts: [{ text: JSON.stringify(validPayload) }] }
+              }]
+            })
+          };
+        };
+        BookmarkAdvisorAI.generateReviewedPlan({
+          apiKey: 'test-key',
+          apiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+          apiStyle: 'auto',
+          model: 'gemini-2.5-flash',
+          maxRetries: 0,
+          snapshot: {
+            created_at: 'now',
+            folders: [],
+            bookmarks: [{
+              id: '10',
+              title: 'Example',
+              url: 'https://example.com',
+              normalized_url: 'https://example.com',
+              folder_path: '/收藏夹栏/Loose'
+            }]
+          }
+        }).then((result) => {
+          console.log(JSON.stringify({
+            callCount: calls.length,
+            succeeded: true,
+            actionType: result.reviewed_plan.actions[0].action_type,
+            call: calls[0]
+          }));
+        }).catch((error) => {
+          console.log(JSON.stringify({
+            callCount: calls.length,
+            succeeded: false,
+            message: String(error.message || error)
+          }));
+        });
+        """
+        result = cast(dict[str, object], self._node_script(body))
+        self.assertTrue(result["succeeded"], result.get("message"))
+        self.assertEqual(result["callCount"], 1)
+        self.assertEqual(result["actionType"], "move_bookmark")
+        call = cast(dict[str, object], result["call"])
+        self.assertEqual(
+            call["url"],
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        )
+        self.assertEqual(
+            call["headers"],
+            {
+                "x-goog-api-key": "test-key",
+                "Content-Type": "application/json",
+            },
+        )
+        callBody = cast(dict[str, object], call["body"])
+        generationConfig = cast(dict[str, object], callBody["generationConfig"])
+        self.assertEqual(generationConfig.get("responseMimeType"), "application/json")
+
+    def test_generate_plan_gemini_falls_back_from_json_to_plain(self):
+        # gemini 链内降级:responseMimeType 被网关 400 拒绝后,回退到
+        # gemini_plain_json(去掉 responseMimeType)并成功。
+        body = """
+        const mimeTypes = [];
+        const validPayload = {
+          summary: { overview: 'gemini plain ok' },
+          activations: [{
+            op: 'move_bookmark',
+            node_id: '10',
+            target: '/收藏夹栏/AI',
+            duplicate_of_id: '',
+            confidence: 0.91,
+            reason: 'move it'
+          }]
+        };
+        global.fetch = async function (_url, options) {
+          const requestBody = JSON.parse(options.body);
+          mimeTypes.push(
+            requestBody.generationConfig && requestBody.generationConfig.responseMimeType
+              ? requestBody.generationConfig.responseMimeType
+              : 'none'
+          );
+          if (mimeTypes.length === 1) {
+            return {
+              ok: false,
+              status: 400,
+              text: async () => JSON.stringify({
+                error: { message: 'responseMimeType is not supported on this endpoint.' }
+              })
+            };
+          }
+          return {
+            ok: true,
+            text: async () => JSON.stringify({
+              candidates: [{
+                content: { parts: [{ text: JSON.stringify(validPayload) }] }
+              }]
+            })
+          };
+        };
+        BookmarkAdvisorAI.generateReviewedPlan({
+          apiKey: 'test-key',
+          apiBaseUrl: 'https://gateway.example.com/llm',
+          apiStyle: 'gemini',
+          model: 'gemini-2.5-flash',
+          maxRetries: 0,
+          snapshot: {
+            created_at: 'now',
+            folders: [],
+            bookmarks: [{
+              id: '10',
+              title: 'Example',
+              url: 'https://example.com',
+              normalized_url: 'https://example.com',
+              folder_path: '/收藏夹栏/Loose'
+            }]
+          }
+        }).then((result) => {
+          console.log(JSON.stringify({
+            callCount: mimeTypes.length,
+            mimeTypes: mimeTypes,
+            succeeded: true,
+            actionType: result.reviewed_plan.actions[0].action_type
+          }));
+        }).catch((error) => {
+          console.log(JSON.stringify({
+            callCount: mimeTypes.length,
+            mimeTypes: mimeTypes,
+            succeeded: false,
+            message: String(error.message || error)
+          }));
+        });
+        """
+        result = cast(dict[str, object], self._node_script(body))
+        self.assertTrue(result["succeeded"], result.get("message"))
+        self.assertEqual(result["callCount"], 2)
+        self.assertEqual(result["mimeTypes"], ["application/json", "none"])
+        self.assertEqual(result["actionType"], "move_bookmark")
+
     def test_parse_handles_nested_json_wrapped_in_prose(self):
         # #17 回归:旧版用 /\{[\s\S]*?\}/ 非贪婪正则提取,对嵌套对象
         # (如 {"summary":{...},"activations":[...]})会截断在第一个内层 }。
